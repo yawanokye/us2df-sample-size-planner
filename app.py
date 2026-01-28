@@ -288,7 +288,7 @@ n_inflated = N if exceeds_population else n_inflated_raw
 # ============================================================
 # Main UI
 # ============================================================
-st.title("US²DF Sample Size Planner")
+st.title("Universal Sample Size Determination Framework (US²DF) Sample Size Planner")
 st.write(
     "Determines sample size using the max-rule: n* = max(n_precision, n_power, n_model), "
     "then inflates for DEFF, HVIF, and nonresponse."
@@ -376,7 +376,7 @@ methods_text = (
     f"{'Model-based planning yielded n_model=' + str(n_model) + ' under the selected model specification. ' if n_model is not None else ''}"
     f"The base recommendation was n*={n_star:,} (binding constraint: {binding}). "
     f"We then inflated the target for field realities using n_inflated = n* × DEFF × HVIF × 1/(1−r), "
-    f"with DEFF={DEFF:g}, HVIF={HVIF:g}, and r={r:g}, resulting in n_inflated={n_inflated:,}."
+    f"with DEFF={DEFF:g}, HVIF={HVIF:g}, and r={r:g}, resulting in recommended sample size of {n_inflated:,} "(Adam, Gyasi, Owusu Jnr & Gyamfi, 2026)"."
     + (f" Because the inflated target exceeded the population (raw target={n_inflated_raw:,} > N={N:,}), "
        f"we recommend a census/near-census approach or revised assumptions." if exceeds_population else "")
 )
@@ -389,7 +389,7 @@ st.markdown(
     """
 **Cite as:**
 
-> **Adam, A.M. & Gyasi, R.M. (2026).**   *Universal Sample Size Determination Framework (US²DF):  A Unified Approach Integrating Precision, Power, and Model-Based  Requirements for Survey Studies.*
+> **Adam, A.M.,  Gyasi, R.M., Owusu Jnr, P. & Gyamfi, E.N. (2026).**   *Universal Sample Size Determination Framework (US²DF):  A Unified Approach Integrating Precision, Power, and Model-Based  Requirements for Survey Studies.*
 """,
     unsafe_allow_html=False
 )
@@ -404,3 +404,4 @@ st.download_button(
 )
 
 # Note: Two-Layer Decision Table has been removed as requested.
+#Update UI toggles and reporting labels
