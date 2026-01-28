@@ -385,10 +385,13 @@ st.markdown(
     """
 **Cite as:**
 
-> **Adam, A.M.,  Gyasi, R.M., Owusu Jnr, P. & Gyamfi, E.N. (2026).**   *Universal Sample Size Determination Framework (US²DF):  A Unified Approach Integrating Precision, Power, and Model-Based  Requirements for Survey Studies.*
+> **Adam, A.M., Gyasi, R.M., Owusu Jnr, P. & Gyamfi, E.N. (2026).**
+*Universal Sample Size Determination Framework (US²DF):  
+A Unified Approach Integrating Precision, Power, and Model-Based Requirements for Survey Studies.*
 """,
     unsafe_allow_html=False
 )
+
 
 # Downloads
 st.markdown("## Downloads")
@@ -401,5 +404,6 @@ st.download_button(
 
 # Note: Two-Layer Decision Table has been removed as requested.
 #Update UI toggles and reporting labels
+
 
 
