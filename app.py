@@ -375,7 +375,7 @@ methods_text = (
     f"(Adam, Gyasi, Owusu Jnr & Gyamfi, 2026)."
 )
 
-)
+
 st.code(methods_text, language="text")
 
 # Required reference line under the methods text
@@ -404,6 +404,7 @@ st.download_button(
 
 # Note: Two-Layer Decision Table has been removed as requested.
 #Update UI toggles and reporting labels
+
 
 
 
