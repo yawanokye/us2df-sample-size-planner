@@ -367,18 +367,14 @@ st.dataframe(df_breakdown, use_container_width=True)
 # Copy-ready methods text
 st.subheader("Copy-ready Methods text")
 methods_text = (
-    f"We determined the minimum sample size using the Universal Sample Size Determination Framework (US²DF), "
-    f"which applies a max-rule across precision-, power-, and model-based requirements: "
-    f"n* = max(n_precision, n_power, n_model). Precision was computed using Adam’s (2020) adjusted Yamane approach, "
-    f"where ε = ρe/t and n_precision = N/(1 + Nε²) with N={N:,}, confidence level={int(conf_level_val*100)}% (z={t:.3f}), "
-    f"ρ={rho:g}, and e={e:g}, giving n_precision={n_precision:,}. "
-    f"{'Power was planned using the US²DF benchmark for ' + effect_size.lower() + ' effects (n_power=' + str(n_power) + '). ' if n_power is not None else ''}"
-    f"{'Model-based planning yielded n_model=' + str(n_model) + ' under the selected model specification. ' if n_model is not None else ''}"
-    f"The base recommendation was n*={n_star:,} (binding constraint: {binding}). "
-    f"We then inflated the target for field realities using n_inflated = n* × DEFF × HVIF × 1/(1−r), "
-    f"with DEFF={DEFF:g}, HVIF={HVIF:g}, and r={r:g}, resulting in recommended sample size ={n_inflated:,} "(Adam, Gyasi, Owusu Jnr & Gyamfi, 2026)"."
-    + (f" Because the inflated target exceeded the population (raw target={n_inflated_raw:,} > N={N:,}), "
-       f"we recommend a census/near-census approach or revised assumptions." if exceeds_population else "")
+    f"The base sample size was determined using the US²DF max-rule "
+    f"(n* = max(n_precision, n_power, n_model)). "
+    f"This value was adjusted for field conditions "
+    f"with DEFF={DEFF:g}, HVIF={HVIF:g}, and r={r:g}, "
+    f"resulting in a final recommended sample size of n={n_inflated:,} "
+    f"(Adam, Gyasi, Owusu Jnr & Gyamfi, 2026)."
+)
+
 )
 st.code(methods_text, language="text")
 
@@ -405,4 +401,5 @@ st.download_button(
 
 # Note: Two-Layer Decision Table has been removed as requested.
 #Update UI toggles and reporting labels
+
 
