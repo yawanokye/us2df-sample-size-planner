@@ -153,7 +153,7 @@ study_purpose = st.sidebar.radio(
 )
 
 outcome_type = st.sidebar.selectbox(
-    "Outcome type",
+    "Measurement Scale of the Estimand",
     ["Categorical (proportions)", "Continuous (means, scales)"],
     index=1
 )
@@ -403,6 +403,7 @@ st.download_button(
 )
 
 # Note: Two-Layer Decision Table has been removed as requested.
+#Update UI toggles and reporting labels
 #Update UI toggles and reporting labels
 #Update UI toggles and reporting labels
 
