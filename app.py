@@ -17,14 +17,10 @@ st.set_page_config(page_title="US²DF Sample Size Planner", layout="wide")
 # Utilities (no SciPy needed)
 # ----------------------------
 def _norm_ppf(p: float) -> float:
-    """
-    Approx inverse CDF of standard normal (Acklam approximation).
-    Good enough for z-values (e.g., 0.975 -> 1.96, 0.995 -> 2.576).
-    """
+    """Approx inverse CDF of standard normal (Acklam approximation)."""
     if not (0.0 < p < 1.0):
         raise ValueError("p must be in (0,1)")
 
-    # Coefficients in rational approximations
     a = [-3.969683028665376e+01,  2.209460984245205e+02, -2.759285104469687e+02,
           1.383577518672690e+02, -3.066479806614716e+01,  2.506628277459239e+00]
     b = [-5.447609879822406e+01,  1.615858368580409e+02, -1.556989798598866e+02,
@@ -57,9 +53,8 @@ def _norm_ppf(p: float) -> float:
 
 
 def z_value(conf_level: float) -> float:
-    # two-sided: z = Phi^{-1}(1 - alpha/2)
     alpha = 1 - conf_level
-    return _norm_ppf(1 - alpha/2)
+    return _norm_ppf(1 - alpha / 2)
 
 
 # ----------------------------
@@ -77,9 +72,9 @@ def adam_n_precision(N: int, epsilon: float) -> int:
 
 
 # ----------------------------
-# Power defaults (US²DF)
+# Power defaults (US²DF) — PER GROUP
 # ----------------------------
-POWER_BENCHMARKS = {
+POWER_BENCHMARKS_PER_GROUP = {
     "Small": 400,
     "Medium": 100,
     "Large": 50
@@ -96,13 +91,13 @@ def green_regression_min(k: int, which: str = "individual") -> int:
     - Individual predictors: n >= 104 + k
     """
     if which == "overall":
-        return int(50 + 8*k)
+        return int(50 + 8 * k)
     return int(104 + k)
 
 
 def logistic_epv_min(k: int, event_rate: float, epv: int = 10) -> int:
     """
-    EPV rule (planning heuristic): required events >= EPV * k
+    EPV planning heuristic: required events >= EPV * k
     total n >= (EPV * k) / event_rate
     """
     event_rate = max(1e-9, float(event_rate))
@@ -111,23 +106,16 @@ def logistic_epv_min(k: int, event_rate: float, epv: int = 10) -> int:
 
 def approx_cfa_free_params(latents: int, indicators_per_latent: int) -> int:
     """
-    Simple planning approximation for CFA/SEM free parameters.
-    (Not exact, intended for planning grid only)
+    Simple planning approximation for CFA/SEM free parameters (planning only).
     """
     L = int(latents)
     m = int(indicators_per_latent)
     total_ind = L * m
 
-    # Loadings: 1 fixed per latent for scale -> (m-1)*L free loadings
-    loadings = (m - 1) * L
-
-    # Indicator error variances: total_ind
-    errors = total_ind
-
-    # Latent variances + covariances: L variances + L(L-1)/2 covariances
+    loadings = (m - 1) * L          # 1 loading fixed per latent
+    errors = total_ind              # indicator error variances
     latent_var_cov = L + (L * (L - 1)) // 2
 
-    # Latent means not included (typical CFA standardised)
     p = loadings + errors + latent_var_cov
     return int(p)
 
@@ -164,10 +152,9 @@ conf_level = st.sidebar.radio("Confidence level", ["95%", "99%"], index=0)
 conf_level_val = 0.95 if conf_level == "95%" else 0.99
 t = z_value(conf_level_val)
 
-# Expected effect size (only relevant when power is in play)
-effect_size = st.sidebar.radio("Expected effect size", ["Small", "Medium", "Large"], index=0)
-
+# ----------------------------
 # Precision settings (Adam 2020 uses rho)
+# ----------------------------
 st.sidebar.subheader("Precision settings (Adam, 2020)")
 if outcome_type.startswith("Categorical"):
     rho = 2.0
@@ -176,10 +163,46 @@ else:
     rho = 4.0
     default_e = 0.03
 
-e = float(st.sidebar.number_input("Desired degree of accuracy (e)", min_value=0.001, max_value=0.20, value=default_e, step=0.001))
+e = float(
+    st.sidebar.number_input(
+        "Desired degree of accuracy (e)",
+        min_value=0.001, max_value=0.20, value=default_e, step=0.001
+    )
+)
 epsilon = adam_epsilon(rho=rho, e=e, t=t)
 
-# Model settings (if relevant)
+# ----------------------------
+# Power settings (only if relevant)
+# ----------------------------
+power_in_play = study_purpose in ["Hypothesis testing / inferential study", "Combination of the above"]
+
+effect_size = None
+design_type = None
+groups_g = 1
+
+if power_in_play:
+    st.sidebar.subheader("Power settings (inferential)")
+
+    # Medium default (index=1)
+    effect_size = st.sidebar.radio("Expected effect size", ["Small", "Medium", "Large"], index=1)
+
+    design_type = st.sidebar.selectbox(
+        "Inferential design",
+        ["Two-group comparison (t-test)", "ANOVA (3+ groups)"],
+        index=0
+    )
+
+    if design_type == "Two-group comparison (t-test)":
+        groups_g = 2
+        st.sidebar.caption("Groups (g): 2")
+    else:
+        groups_g = int(
+            st.sidebar.number_input("Number of groups (g)", min_value=3, max_value=50, value=3, step=1)
+        )
+
+# ----------------------------
+# Model settings (show model choice first, then settings)
+# ----------------------------
 st.sidebar.subheader("Model settings (if applicable)")
 
 model_context = st.sidebar.selectbox(
@@ -188,7 +211,7 @@ model_context = st.sidebar.selectbox(
     index=0
 )
 
-# Defaults (so variables exist even when hidden)
+# Defaults so variables exist
 k_predictors = 10
 event_rate = 0.20
 epv = 10
@@ -201,7 +224,12 @@ if model_context == "Multiple regression":
 
 elif model_context == "Logistic regression":
     k_predictors = int(st.sidebar.number_input("Number of predictors (k)", min_value=1, value=10, step=1))
-    event_rate = float(st.sidebar.number_input("Event rate (for logistic), e.g., 0.20", min_value=0.01, max_value=0.99, value=0.20, step=0.01))
+    event_rate = float(
+        st.sidebar.number_input(
+            "Event rate (for logistic), e.g., 0.20",
+            min_value=0.01, max_value=0.99, value=0.20, step=0.01
+        )
+    )
     epv = int(st.sidebar.number_input("EPV (events per variable)", min_value=5, max_value=50, value=10, step=1))
 
 elif model_context == "SEM / CFA":
@@ -209,7 +237,9 @@ elif model_context == "SEM / CFA":
     indicators_per_latent = int(st.sidebar.number_input("Indicators per latent", min_value=2, value=4, step=1))
     sem_ratio = int(st.sidebar.number_input("n per parameter ratio", min_value=5, max_value=30, value=10, step=1))
 
+# ----------------------------
 # Field adjustments with Yes/No enable switches
+# ----------------------------
 st.sidebar.subheader("Field adjustments")
 
 use_deff = st.sidebar.radio("Apply DEFF?", ["No", "Yes"], horizontal=True, key="use_deff")
@@ -243,16 +273,19 @@ r = float(nr_val) if use_nr == "Yes" else 0.0
 # Precision
 n_precision = adam_n_precision(N=N, epsilon=epsilon)
 
-# Power (only for inferential or combination)
+# Power (PER GROUP benchmark -> TOTAL depends on number of groups)
 n_power = None
-if study_purpose in ["Hypothesis testing / inferential study", "Combination of the above"]:
-    n_power = int(POWER_BENCHMARKS[effect_size])
+n_power_per_group = None
+if power_in_play:
+    n_power_per_group = int(POWER_BENCHMARKS_PER_GROUP[effect_size])
+    n_power = int(n_power_per_group * groups_g)
 
 # Model-based
+model_in_play = study_purpose in ["Model-based analysis", "Combination of the above"]
 n_model = None
-if study_purpose in ["Model-based analysis", "Combination of the above"]:
+
+if model_in_play:
     if model_context == "Multiple regression":
-        # default to individual predictor rule (stricter)
         n_model = green_regression_min(k=k_predictors, which="individual")
     elif model_context == "Logistic regression":
         n_model = logistic_epv_min(k=k_predictors, event_rate=event_rate, epv=epv)
@@ -263,20 +296,17 @@ if study_purpose in ["Model-based analysis", "Combination of the above"]:
         n_model = None
 
 # Max-rule
-candidates = [n_precision]
+candidates = {"Precision": n_precision}
 if n_power is not None:
-    candidates.append(n_power)
+    candidates["Power"] = n_power
 if n_model is not None:
-    candidates.append(n_model)
+    candidates["Model"] = n_model
 
-n_star = int(max(candidates))
+n_star = int(max(candidates.values()))
 
-# Binding constraint
-binding = "Precision"
-if (n_power is not None) and (n_star == n_power):
-    binding = "Power"
-if (n_model is not None) and (n_star == n_model):
-    binding = "Model"
+# Binding constraint(s) (handles ties)
+binding_constraints = [k for k, v in candidates.items() if v == n_star]
+binding_text = ", ".join(binding_constraints)
 
 # Inflation
 inflator = (DEFF * HVIF) / max(1e-9, (1 - r))
@@ -290,27 +320,32 @@ n_inflated = N if exceeds_population else n_inflated_raw
 # ============================================================
 st.title("Unified Sample Size Determination Framework (US²DF) Sample Size Planner")
 st.write(
-    "Determines sample size using the max-rule: n* = max(n_precision, n_power, n_model), "
+    "Computes sample size using the max-rule: n* = max(n_precision, n_power, n_model), "
     "then inflates for DEFF, HVIF, and nonresponse."
 )
 
 c1, c2, c3 = st.columns(3)
 c1.metric("Sample Size Estimate based on Precision", f"{n_precision:,}")
-c2.metric("Sample Size Estimate based on Power", f"{n_power:,}" if n_power is not None else "—")
+
+if n_power is None:
+    c2.metric("Sample Size Estimate based on Power", "—")
+else:
+    c2.metric("Sample Size Estimate based on Power", f"{n_power:,}")
+
 c3.metric("Sample Size Estimate based on Model", f"{n_model:,}" if n_model is not None else "—")
 
 st.markdown("## US²DF Recommendation")
 colA, colB = st.columns(2)
 colA.metric("Base sample size (max-rule), n*", f"{n_star:,}")
-colB.metric("**Adjusted and Final Recommended Sample Size**", f"{n_inflated:,}")
+colB.metric("Adjusted and Final Recommended Sample Size", f"{n_inflated:,}")
 
-st.success(f"Binding constraint: **{binding}**")
+st.success(f"Binding constraint(s): **{binding_text}**")
 
 if exceeds_population:
     st.warning(
-        f"**Caution:** The Adjusted Sample Size ({n_inflated_raw:,}) exceeds the population (N={N:,}). "
+        f"**Caution:** The adjusted sample size ({n_inflated_raw:,}) exceeds the population (N={N:,}). "
         f"US²DF recommends a **census/near-census** approach where feasible. "
-        f"If a census is not feasible, revise inflation drivers (DEFF/HVIF/nonresponse assumptions) "
+        f"If a census is not feasible, revise inflation drivers (DEFF/HVIF/nonresponse assumptions), "
         f"or revise precision/power/model targets, and report this limitation clearly."
     )
 
@@ -322,24 +357,38 @@ rows.append({
     "Value": n_precision,
     "Notes": f"Adam (2020): ε=ρe/t with ρ={rho:g}, e={e:g}, z={t:.4f}; n=N/(1+Nε²)"
 })
-rows.append({
-    "Component": "Sample Size Estimate based on Power",
-    "Value": n_power if n_power is not None else "—",
-    "Notes": f"US²DF benchmark: {effect_size}= {POWER_BENCHMARKS[effect_size]} (α=0.05, 80% power) if inferential"
-})
+
+if n_power is None:
+    rows.append({
+        "Component": "Sample Size Estimate based on Power",
+        "Value": "—",
+        "Notes": "Not applied (study purpose does not include inferential power)."
+    })
+else:
+    rows.append({
+        "Component": "Sample Size Estimate based on Power",
+        "Value": n_power,
+        "Notes": (
+            f"US²DF per-group benchmark: {effect_size}={n_power_per_group} per group "
+            f"(α=0.05, 80% power). Design: {design_type}. Groups g={groups_g} → total n={n_power}."
+        )
+    })
+
 rows.append({
     "Component": "Sample Size Estimate based on Model",
     "Value": n_model if n_model is not None else "—",
     "Notes": (
-        "Regression (Green, 1991) / Logistic (EPV) / SEM planning ratio, depending on model selection"
-        if n_model is not None else "Not applied for this study purpose/model choice"
+        "Regression (Green, 1991), Logistic (EPV), or SEM/CFA planning ratio, depending on model selection."
+        if n_model is not None else "Not applied for this study purpose/model choice."
     )
 })
+
 rows.append({
     "Component": "Base sample size (max-rule), n*",
     "Value": n_star,
     "Notes": "n* = max(n_precision, n_power, n_model)"
 })
+
 rows.append({
     "Component": "DEFF applied?",
     "Value": "Yes" if use_deff == "Yes" else "No",
@@ -355,6 +404,7 @@ rows.append({
     "Value": "Yes" if use_nr == "Yes" else "No",
     "Notes": f"r = {r:g}"
 })
+
 rows.append({
     "Component": "Final n_inflated",
     "Value": n_inflated,
@@ -366,32 +416,41 @@ st.dataframe(df_breakdown, use_container_width=True)
 
 # Copy-ready methods text
 st.subheader("Copy-ready Methods text")
+
+power_clause = ""
+if n_power is not None:
+    power_clause = (
+        f"For power, US²DF applies per-group benchmarks of {n_power_per_group:,} "
+        f"({effect_size.lower()} effects) with g={groups_g} groups, giving n_power={n_power:,}. "
+    )
+
+model_clause = ""
+if n_model is not None:
+    model_clause = f"Model-based requirements were also assessed (n_model={n_model:,}). "
+
 methods_text = (
     f"The base sample size was determined using the US²DF max-rule "
     f"(n* = max(n_precision, n_power, n_model)). "
-    f"This value was adjusted for field conditions "
-    f"with DEFF={DEFF:g}, HVIF={HVIF:g}, and r={r:g}, "
+    f"{power_clause}"
+    f"{model_clause}"
+    f"This value was adjusted for field conditions with DEFF={DEFF:g}, HVIF={HVIF:g}, and r={r:g}, "
     f"resulting in a final recommended sample size of n={n_inflated:,} "
     f"(Adam, Gyasi, Owusu Jnr & Gyamfi, 2026)."
 )
-
 
 st.code(methods_text, language="text")
 
 # Required reference line under the methods text
 st.markdown("---")
-
 st.markdown(
     """
 **Cite as:**
 
-> **Adam, A.M., Gyasi, R.M., Owusu Jnr, P. & Gyamfi, E.N. (2026).**
-*Unified Sample Size Determination Framework (US²DF):  
-Integrating Precision, Power, and Model-Based Requirements for Survey Studies.*
+> **Adam, A.M., Gyasi, R.M., Owusu Jnr, P. & Gyamfi, E.N. (2026).**  
+*Unified Sample Size Determination Framework (US²DF): Integrating Precision, Power, and Model-Based Requirements for Survey Studies.*
 """,
     unsafe_allow_html=False
 )
-
 
 # Downloads
 st.markdown("## Downloads")
@@ -406,6 +465,7 @@ st.download_button(
 #Update UI toggles and reporting labels
 #Update UI toggles and reporting labels
 #Update UI toggles and reporting labels
+
 
 
 
