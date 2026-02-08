@@ -445,7 +445,7 @@ methods_text = (
     f"{model_clause}"
     f"This value was adjusted for field conditions with DEFF={DEFF:g}, HVIF={HVIF:g}, and r={r:g}, "
     f"resulting in a final recommended sample size of n={n_inflated:,} "
-    f"(Adam, Gyasi, Owusu Jnr & Gyamfi, 2026)."
+    f"(Adam, Gyasi, Owusu Junior & Gyamfi, 2026)."
 )
 
 st.code(methods_text, language="text")
@@ -456,8 +456,8 @@ st.markdown(
     """
 **Cite as:**
 
-> **Adam, A.M., Gyasi, R.M., Owusu Jnr, P. & Gyamfi, E.N. (2026).**  
-*Unified Sample Size Determination Framework (US²DF): Integrating Precision, Power, and Model-Based Requirements for Survey Studies.*
+> **Adam, A.M., Gyasi, R.M., Owusu Junior, P. & Gyamfi, E.N. (2026).**  
+*Unified Sample Size Determination Framework (US²DF): Integrating Precision, Power, and Model-Based Requirements for Survey Research.*
 """,
     unsafe_allow_html=False
 )
@@ -475,6 +475,7 @@ st.download_button(
 #Update UI toggles and reporting labels
 #Update UI toggles and reporting labels
 #Update UI toggles and reporting labels
+
 
 
 
