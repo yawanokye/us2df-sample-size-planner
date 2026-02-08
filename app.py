@@ -177,7 +177,7 @@ def sem_min_n_by_ratio(params: int, ratio: int = 10) -> int:
 # Sidebar layout (Step-by-step)
 # ============================================================
 st.sidebar.markdown("## US²DF Inputs")
-st.sidebar.caption("Work top to bottom. The final recommendation is the maximum of selected components, then adjusted for field conditions.")
+st.sidebar.caption("The final recommended minimum sample size is the maximum of selected components, then adjusted for field conditions.")
 
 # ----------------------------
 # Step 1: components
@@ -191,14 +191,14 @@ st.sidebar.markdown(
 )
 
 r1 = st.sidebar.columns([0.78, 0.22])
-use_precision = r1[0].checkbox("Precision component", value=True)
+use_precision = r1[0].checkbox("Precision-based Sample Size Determination", value=True)
 with r1[1].popover("ℹ", use_container_width=True):
     st.markdown(
         """
 <div class="us2df-pop">
 <span class="tag prec">PRECISION</span>
 <p><span style="color:rgb(24, 90, 150); font-weight:700;">What it represents</span><br>
-A margin-of-error requirement for estimating a mean or proportion in a finite population.</p>
+Minimum sample size needed to estimate a mean or proportion within a chosen margin of error (precision) in a finite population.</p>
 <p><span style="color:rgb(24, 90, 150); font-weight:700;">What it uses</span><br>
 Adam (2020): ε=ρe/t and n=N/(1+Nε²).</p>
 <p><span style="color:rgb(24, 90, 150); font-weight:700;">When to select</span><br>
@@ -209,7 +209,7 @@ Descriptive surveys or when you must report a confidence bound on an estimate.</
     )
 
 r2 = st.sidebar.columns([0.78, 0.22])
-use_power = r2[0].checkbox("Power component", value=True)
+use_power = r2[0].checkbox("Power-based Sample Size Determination", value=True)
 with r2[1].popover("ℹ", use_container_width=True):
     st.markdown(
         """
@@ -227,7 +227,7 @@ Group comparisons, associations, treatment contrasts, inferential objectives.</p
     )
 
 r3 = st.sidebar.columns([0.78, 0.22])
-use_model = r3[0].checkbox("Model component", value=False)
+use_model = r3[0].checkbox("Model-based Sample Size Determination", value=False)
 with r3[1].popover("ℹ", use_container_width=True):
     st.markdown(
         """
@@ -507,3 +507,4 @@ st.download_button(
     file_name="US2DF_Breakdown.csv",
     mime="text/csv",
 )
+
