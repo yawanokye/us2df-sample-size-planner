@@ -12,6 +12,10 @@ import streamlit as st
 # - Max-rule: n* = max(selected components)
 # - Inflation: n_inflated = n* × DEFF × HVIF × 1/(1-r)
 # - Caps n_inflated at N (population) with caution message
+#
+# Notes:
+# - Power component uses a simple normal-approximation planning formula (no SciPy).
+# - SEM/CFA parameter count is a planning approximation.
 # ============================================================
 
 st.set_page_config(page_title="US²DF Sample Size Planner", layout="wide")
@@ -55,9 +59,24 @@ def _norm_ppf(p: float) -> float:
     return num / den
 
 
-def z_value(conf_level: float) -> float:
-    alpha = 1 - conf_level
+def z_value_from_alpha(alpha: float) -> float:
+    """Two-sided z critical for given alpha (e.g., alpha=0.05 => 1.96)."""
+    alpha = float(alpha)
+    alpha = min(max(alpha, 1e-9), 0.999999999)
     return _norm_ppf(1 - alpha / 2)
+
+
+def z_value_from_conf(conf_level: float) -> float:
+    """Two-sided z critical for confidence level (e.g., 0.95 => 1.96)."""
+    alpha = 1 - float(conf_level)
+    return z_value_from_alpha(alpha)
+
+
+def z_beta_from_power(power: float) -> float:
+    """z value for desired power: z_(1-beta)."""
+    power = float(power)
+    power = min(max(power, 1e-9), 0.999999999)
+    return _norm_ppf(power)
 
 
 # ----------------------------
@@ -72,16 +91,6 @@ def adam_n_precision(N: int, epsilon: float) -> int:
     # n = N / (1 + N*ε^2)
     n = N / (1 + N * (epsilon ** 2))
     return int(math.ceil(n))
-
-
-# ----------------------------
-# Power defaults (US²DF) — PER GROUP
-# ----------------------------
-POWER_BENCHMARKS_PER_GROUP = {
-    "Small": 400,
-    "Medium": 100,
-    "Large": 50
-}
 
 
 # ----------------------------
@@ -128,62 +137,111 @@ def sem_min_n_by_ratio(params: int, ratio: int = 10) -> int:
     return int(params * ratio)
 
 
-# ============================================================
-# Sidebar Inputs
-# ============================================================
-st.sidebar.title("Inputs")
+# ----------------------------
+# Power planning (no SciPy)
+# ----------------------------
+def power_n_two_group_continuous(alpha: float, power: float, d: float, allocation: float = 0.5) -> int:
+    """
+    Two-group comparison, continuous outcome (standardized mean difference d).
+    Balanced groups by default (allocation=0.5).
+    Total n ≈ (zα/2 + zβ)^2 * (1/p + 1/(1-p)) / d^2
+    For p=0.5, (1/p + 1/(1-p)) = 4.
+    """
+    d = max(1e-9, float(d))
+    p = min(max(float(allocation), 0.05), 0.95)
+    z_a = z_value_from_alpha(alpha)
+    z_b = z_beta_from_power(power)
+    n_total = ((z_a + z_b) ** 2) * (1 / p + 1 / (1 - p)) / (d ** 2)
+    return int(math.ceil(n_total))
 
-st.sidebar.subheader("Study purpose")
-st.sidebar.caption("Select one, two, or all three components.")
-study_components = st.sidebar.multiselect(
-    "Components to include",
-    [
-        "Descriptive estimation (Precision)",
-        "Hypothesis testing (Power)",
-        "Model-based analysis (Model)",
-    ],
-    default=["Hypothesis testing (Power)"],
-)
 
-if len(study_components) == 0:
+def power_n_two_proportions(alpha: float, power: float, p1: float, p2: float, allocation: float = 0.5) -> int:
+    """
+    Two-group comparison, proportions.
+    Uses normal approximation planning formula with pooled variance.
+    Total n ≈ [ zα/2*sqrt(2*pbar(1-pbar)) + zβ*sqrt(p1(1-p1)+p2(1-p2)) ]^2 / (p1-p2)^2
+    Then adjusted for allocation p (defaults balanced).
+    """
+    p1 = min(max(float(p1), 1e-6), 1 - 1e-6)
+    p2 = min(max(float(p2), 1e-6), 1 - 1e-6)
+    diff = abs(p1 - p2)
+    diff = max(diff, 1e-9)
+
+    z_a = z_value_from_alpha(alpha)
+    z_b = z_beta_from_power(power)
+
+    pbar = (p1 + p2) / 2
+    term1 = z_a * math.sqrt(2 * pbar * (1 - pbar))
+    term2 = z_b * math.sqrt(p1 * (1 - p1) + p2 * (1 - p2))
+    n_per_group = ((term1 + term2) ** 2) / (diff ** 2)
+
+    # allocation adjustment (optional)
+    alloc = min(max(float(allocation), 0.05), 0.95)
+    # If unbalanced, total rises by factor (1/alloc + 1/(1-alloc))/4 relative to balanced
+    adj = (1 / alloc + 1 / (1 - alloc)) / 4
+    n_total = 2 * n_per_group * adj
+    return int(math.ceil(n_total))
+
+
+def power_n_anova_continuous(alpha: float, power: float, f: float, groups: int) -> int:
+    """
+    Practical planning approximation for one-way ANOVA with Cohen's f.
+    Uses a rough normal-approx style: n_total ≈ ( (zα + zβ)^2 / f^2 ) * (groups - 1)
+    This is a planning guide, not an exact F-based calculation.
+    """
+    f = max(1e-9, float(f))
+    g = max(3, int(groups))
+    z_a = z_value_from_alpha(alpha)
+    z_b = z_beta_from_power(power)
+    n_total = ((z_a + z_b) ** 2) * (g - 1) / (f ** 2)
+    return int(math.ceil(n_total))
+
+
+# ============================================================
+# Sidebar Inputs (Step-by-step)
+# ============================================================
+st.sidebar.title("Inputs (Step-by-step)")
+
+st.sidebar.markdown("### Step 1. Choose components")
+st.sidebar.caption("Tick what applies. You can choose one, two, or all three.")
+precision_in_play = st.sidebar.checkbox("Descriptive estimation (Precision)", value=False)
+power_in_play = st.sidebar.checkbox("Hypothesis testing (Power)", value=True)
+model_in_play = st.sidebar.checkbox("Model-based analysis (Model)", value=False)
+
+if not (precision_in_play or power_in_play or model_in_play):
     st.sidebar.error("Select at least one component.")
-    study_components = ["Descriptive estimation (Precision)"]
+    precision_in_play = True
 
-precision_in_play = "Descriptive estimation (Precision)" in study_components
-power_in_play = "Hypothesis testing (Power)" in study_components
-model_in_play = "Model-based analysis (Model)" in study_components
-
-st.sidebar.subheader("Measurement Scale of the Estimand")
-st.sidebar.caption("Default selection is Categorical (proportions).")
+st.sidebar.markdown("### Step 2. Outcome type")
+st.sidebar.caption("Default is Categorical (proportions).")
 outcome_type = st.sidebar.selectbox(
-    "Scale",
+    "Measurement Scale of the Estimand",
     ["Categorical (proportions)", "Continuous (means, scales)"],
-    index=0,  # default to categorical
+    index=0,
 )
+is_categorical = outcome_type.startswith("Categorical")
 
+st.sidebar.markdown("### Step 3. Population and confidence")
 N = int(st.sidebar.number_input("Population size (N)", min_value=1, value=50000, step=100))
-
-conf_level = st.sidebar.radio("Confidence level", ["95%", "99%"], index=0)
+conf_level = st.sidebar.radio("Confidence level (for precision)", ["95%", "99%"], index=0)
 conf_level_val = 0.95 if conf_level == "95%" else 0.99
-t = z_value(conf_level_val)
+t_conf = z_value_from_conf(conf_level_val)
 
 # ----------------------------
-# Precision settings (Adam, 2020) — only show if selected
+# Precision settings (Step 4) — only show if selected
 # ----------------------------
 epsilon = None
 rho = None
 e = None
 n_precision = None
 
+st.sidebar.markdown("### Step 4. Precision settings")
 if precision_in_play:
-    st.sidebar.subheader("Precision settings (Adam, 2020)")
-
-    is_categorical = outcome_type.startswith("Categorical")
-
+    st.sidebar.caption("If you’re estimating a proportion or mean, set your desired accuracy (e).")
     rho = 2.0 if is_categorical else 4.0
     default_e = 0.05 if is_categorical else 0.03
-
     e_key = "e_categorical" if is_categorical else "e_continuous"
+
     e = st.sidebar.number_input(
         "Desired degree of accuracy (e)",
         min_value=0.001,
@@ -192,41 +250,72 @@ if precision_in_play:
         step=0.001,
         key=e_key
     )
-    epsilon = adam_epsilon(rho=rho, e=e, t=t)
-    st.sidebar.caption("Suggested defaults: e=0.05 (categorical), e=0.03 (continuous).")
+    epsilon = adam_epsilon(rho=rho, e=e, t=t_conf)
+    st.sidebar.caption("Typical defaults: e=0.05 for proportions, e=0.03 for continuous scales.")
+else:
+    st.sidebar.caption("Not selected, precision calculation will be skipped.")
 
 # ----------------------------
-# Power settings — only show if selected
+# Power settings (Step 5) — only show if selected
 # ----------------------------
-effect_size = None
+alpha = None
+power = None
 design_type = None
 groups_g = 1
 n_power = None
-n_power_per_group = None
+n_power_note = ""
 
+st.sidebar.markdown("### Step 5. Power settings")
 if power_in_play:
-    st.sidebar.subheader("Power settings (inferential)")
-    st.sidebar.caption("Benchmarks assume α=0.05 and 80% power (fixed).")
+    st.sidebar.caption("Set α and power. Defaults are α=0.05 and 80% power.")
 
-    effect_size = st.sidebar.radio("Expected effect size", ["Small", "Medium", "Large"], index=1)
+    alpha = st.sidebar.number_input(
+        "Significance level (α)",
+        min_value=0.001, max_value=0.20, value=0.05, step=0.001
+    )
+    power = st.sidebar.number_input(
+        "Desired power (1−β)",
+        min_value=0.50, max_value=0.99, value=0.80, step=0.01
+    )
 
     design_type = st.sidebar.selectbox(
         "Inferential design",
-        ["Two-group comparison (t-test)", "ANOVA (3+ groups)"],
+        ["Two-group comparison", "ANOVA (3+ groups)"],
         index=0
     )
 
-    if design_type == "Two-group comparison (t-test)":
+    if design_type == "Two-group comparison":
         groups_g = 2
         st.sidebar.caption("Groups (g): 2")
+
+        if is_categorical:
+            st.sidebar.caption("For proportions, enter expected p1 and p2.")
+            p1 = st.sidebar.number_input("Expected proportion in Group 1 (p1)", min_value=0.01, max_value=0.99, value=0.50, step=0.01)
+            p2 = st.sidebar.number_input("Expected proportion in Group 2 (p2)", min_value=0.01, max_value=0.99, value=0.60, step=0.01)
+            n_power = power_n_two_proportions(alpha=alpha, power=power, p1=p1, p2=p2)
+            n_power_note = f"Two-proportion planning: p1={p1:.2f}, p2={p2:.2f}, α={alpha:.3f}, power={power:.2f}."
+        else:
+            st.sidebar.caption("For continuous outcomes, enter Cohen’s d (standardised mean difference).")
+            d = st.sidebar.number_input("Expected effect size (Cohen’s d)", min_value=0.10, max_value=2.00, value=0.50, step=0.05)
+            n_power = power_n_two_group_continuous(alpha=alpha, power=power, d=d)
+            n_power_note = f"Two-sample planning: d={d:.2f}, α={alpha:.3f}, power={power:.2f}."
+
     else:
-        groups_g = int(
-            st.sidebar.number_input("Number of groups (g)", min_value=3, max_value=50, value=3, step=1)
-        )
+        groups_g = int(st.sidebar.number_input("Number of groups (g)", min_value=3, max_value=50, value=3, step=1))
+        if is_categorical:
+            st.sidebar.caption("ANOVA is for continuous outcomes. For categorical outcomes, consider logistic models or chi-square planning.")
+            # Still allow a rough planning via continuous f to avoid blocking the UI completely
+        st.sidebar.caption("Enter Cohen’s f (small=0.10, medium=0.25, large=0.40).")
+        f = st.sidebar.number_input("Expected effect size (Cohen’s f)", min_value=0.05, max_value=1.00, value=0.25, step=0.05)
+        n_power = power_n_anova_continuous(alpha=alpha, power=power, f=f, groups=groups_g)
+        n_power_note = f"ANOVA planning: f={f:.2f}, g={groups_g}, α={alpha:.3f}, power={power:.2f}."
+else:
+    st.sidebar.caption("Not selected, power calculation will be skipped.")
 
 # ----------------------------
-# Model settings — only show if selected
+# Model settings (Step 6) — only show if selected
 # ----------------------------
+st.sidebar.markdown("### Step 6. Model settings")
 model_context = "None"
 k_predictors = 10
 event_rate = 0.20
@@ -236,10 +325,10 @@ indicators_per_latent = 4
 sem_ratio = 10
 n_model = None
 sem_params_p = None
+model_note = ""
 
 if model_in_play:
-    st.sidebar.subheader("Model settings (if applicable)")
-
+    st.sidebar.caption("Pick the main analysis model to apply a planning heuristic.")
     model_context = st.sidebar.selectbox(
         "Model type",
         ["Multiple regression", "Logistic regression", "SEM / CFA"],
@@ -248,26 +337,31 @@ if model_in_play:
 
     if model_context == "Multiple regression":
         k_predictors = int(st.sidebar.number_input("Number of predictors (k)", min_value=1, value=10, step=1))
+        n_model = green_regression_min(k=k_predictors, which="individual")
+        model_note = f"Green (1991) individual predictors rule: n ≥ 104 + k (k={k_predictors})."
 
     elif model_context == "Logistic regression":
         k_predictors = int(st.sidebar.number_input("Number of predictors (k)", min_value=1, value=10, step=1))
-        event_rate = float(
-            st.sidebar.number_input(
-                "Event rate (for logistic), e.g., 0.20",
-                min_value=0.01, max_value=0.99, value=0.20, step=0.01
-            )
-        )
+        event_rate = float(st.sidebar.number_input("Event rate", min_value=0.01, max_value=0.99, value=0.20, step=0.01))
         epv = int(st.sidebar.number_input("EPV (events per variable)", min_value=5, max_value=50, value=10, step=1))
+        n_model = logistic_epv_min(k=k_predictors, event_rate=event_rate, epv=epv)
+        model_note = f"EPV planning: total n ≥ (EPV×k)/event_rate = ({epv}×{k_predictors})/{event_rate:.2f}."
 
     elif model_context == "SEM / CFA":
-        latents = int(st.sidebar.number_input("Latent variables (SEM/CFA)", min_value=1, value=3, step=1))
+        latents = int(st.sidebar.number_input("Latent variables", min_value=1, value=3, step=1))
         indicators_per_latent = int(st.sidebar.number_input("Indicators per latent", min_value=2, value=4, step=1))
         sem_ratio = int(st.sidebar.number_input("n per parameter ratio", min_value=5, max_value=30, value=10, step=1))
+        sem_params_p = approx_cfa_free_params(latents=latents, indicators_per_latent=indicators_per_latent)
+        n_model = sem_min_n_by_ratio(params=sem_params_p, ratio=sem_ratio)
+        model_note = f"SEM/CFA planning: p≈{sem_params_p} free params, n≈p×{sem_ratio}."
+else:
+    st.sidebar.caption("Not selected, model-based calculation will be skipped.")
 
 # ----------------------------
-# Field adjustments with Yes/No enable switches
+# Field adjustments (Step 7)
 # ----------------------------
-st.sidebar.subheader("Field adjustments")
+st.sidebar.markdown("### Step 7. Field adjustments")
+st.sidebar.caption("Use these when you expect clustering, measurement inflation, or nonresponse.")
 
 use_deff = st.sidebar.radio("Apply DEFF?", ["No", "Yes"], horizontal=True, key="use_deff")
 deff_val = st.sidebar.number_input(
@@ -306,19 +400,10 @@ if precision_in_play:
 
 # Power
 if power_in_play:
-    n_power_per_group = int(POWER_BENCHMARKS_PER_GROUP[effect_size])
-    n_power = int(n_power_per_group * groups_g)
     candidates["Power"] = n_power
 
 # Model
 if model_in_play:
-    if model_context == "Multiple regression":
-        n_model = green_regression_min(k=k_predictors, which="individual")
-    elif model_context == "Logistic regression":
-        n_model = logistic_epv_min(k=k_predictors, event_rate=event_rate, epv=epv)
-    elif model_context == "SEM / CFA":
-        sem_params_p = approx_cfa_free_params(latents=latents, indicators_per_latent=indicators_per_latent)
-        n_model = sem_min_n_by_ratio(params=sem_params_p, ratio=sem_ratio)
     candidates["Model"] = n_model
 
 # Max-rule (selected components only)
@@ -337,29 +422,14 @@ n_inflated = N if exceeds_population else n_inflated_raw
 # ============================================================
 st.title("Unified Sample Size Determination Framework (US²DF) Sample Size Planner")
 st.write(
-    "Select any combination of Precision, Power, and Model-based components. "
-    "The planner applies the max-rule, then inflates for DEFF, HVIF, and nonresponse."
+    "This planner lets you tick the components that apply (Precision, Power, Model). "
+    "It then applies the max-rule and adjusts for field conditions."
 )
 
 c1, c2, c3 = st.columns(3)
-
-# Precision metric
-if precision_in_play:
-    c1.metric("Sample Size Estimate based on Precision", f"{n_precision:,}")
-else:
-    c1.metric("Sample Size Estimate based on Precision", "—")
-
-# Power metric
-if power_in_play:
-    c2.metric("Sample Size Estimate based on Power", f"{n_power:,}")
-else:
-    c2.metric("Sample Size Estimate based on Power", "—")
-
-# Model metric
-if model_in_play:
-    c3.metric("Sample Size Estimate based on Model", f"{n_model:,}")
-else:
-    c3.metric("Sample Size Estimate based on Model", "—")
+c1.metric("Sample Size Estimate based on Precision", f"{n_precision:,}" if precision_in_play else "—")
+c2.metric("Sample Size Estimate based on Power", f"{n_power:,}" if power_in_play else "—")
+c3.metric("Sample Size Estimate based on Model", f"{n_model:,}" if model_in_play else "—")
 
 st.markdown("## US²DF Recommendation")
 colA, colB = st.columns(2)
@@ -379,58 +449,26 @@ if exceeds_population:
 # Breakdown table
 rows = []
 
-if precision_in_play:
-    rows.append({
-        "Component": "Sample Size Estimate based on Precision",
-        "Value": n_precision,
-        "Notes": f"Adam (2020): ε=ρe/t with ρ={rho:g}, e={e:g}, z={t:.4f}; n=N/(1+Nε²)"
-    })
-else:
-    rows.append({
-        "Component": "Sample Size Estimate based on Precision",
-        "Value": "—",
-        "Notes": "Not selected."
-    })
+rows.append({
+    "Component": "Sample Size Estimate based on Precision",
+    "Value": n_precision if precision_in_play else "—",
+    "Notes": (
+        f"Adam (2020): ε=ρe/t with ρ={rho:g}, e={e:g}, z={t_conf:.4f}; n=N/(1+Nε²)"
+        if precision_in_play else "Not selected."
+    )
+})
 
-if power_in_play:
-    rows.append({
-        "Component": "Sample Size Estimate based on Power",
-        "Value": n_power,
-        "Notes": (
-            f"US²DF per-group benchmark: {effect_size}={n_power_per_group} per group "
-            f"(α=0.05, 80% power). Design: {design_type}. Groups g={groups_g} → total n={n_power}."
-        )
-    })
-else:
-    rows.append({
-        "Component": "Sample Size Estimate based on Power",
-        "Value": "—",
-        "Notes": "Not selected."
-    })
+rows.append({
+    "Component": "Sample Size Estimate based on Power",
+    "Value": n_power if power_in_play else "—",
+    "Notes": n_power_note if power_in_play else "Not selected."
+})
 
-if model_in_play:
-    model_note = "Model heuristic applied."
-    if model_context == "Multiple regression":
-        model_note = "Regression (Green, 1991) planning rule."
-    elif model_context == "Logistic regression":
-        model_note = "Logistic regression EPV planning rule."
-    elif model_context == "SEM / CFA":
-        model_note = (
-            f"SEM/CFA planning approximation of free parameters (p={sem_params_p}) "
-            f"then n = p×ratio (ratio={sem_ratio})."
-        )
-
-    rows.append({
-        "Component": "Sample Size Estimate based on Model",
-        "Value": n_model,
-        "Notes": model_note
-    })
-else:
-    rows.append({
-        "Component": "Sample Size Estimate based on Model",
-        "Value": "—",
-        "Notes": "Not selected."
-    })
+rows.append({
+    "Component": "Sample Size Estimate based on Model",
+    "Value": n_model if model_in_play else "—",
+    "Notes": model_note if model_in_play else "Not selected."
+})
 
 rows.append({
     "Component": "Base sample size (max-rule), n*",
@@ -470,28 +508,26 @@ st.dataframe(df_breakdown, use_container_width=True)
 # Copy-ready methods text
 st.subheader("Copy-ready Methods text")
 
-power_clause = ""
-if power_in_play:
-    power_clause = (
-        f"For power, US²DF applies per-group benchmarks of {n_power_per_group:,} "
-        f"({effect_size.lower()} effects) with g={groups_g} groups, giving n_power={n_power:,}. "
-    )
+selected = ", ".join(candidates.keys())
 
 precision_clause = ""
 if precision_in_play:
     precision_clause = (
         f"Precision requirements were computed using Adam (2020) "
-        f"(ε=ρe/t; ρ={rho:g}, e={e:g}, z={t:.4f}) giving n_precision={n_precision:,}. "
+        f"(ε=ρe/t; ρ={rho:g}, e={e:g}, z={t_conf:.4f}) giving n_precision={n_precision:,}. "
     )
+
+power_clause = ""
+if power_in_play:
+    power_clause = f"Power planning used α={alpha:.3f} and power={power:.2f} ({n_power_note}) giving n_power={n_power:,}. "
 
 model_clause = ""
 if model_in_play:
-    model_clause = f"Model-based requirements were also assessed (n_model={n_model:,}). "
+    model_clause = f"Model-based requirements were assessed using planning heuristics (n_model={n_model:,}). "
 
 methods_text = (
-    f"Sample size planning followed the US²DF framework using selected components "
-    f"({', '.join(candidates.keys())}) and the max-rule "
-    f"(n* = max(n_precision, n_power, n_model) over selected components). "
+    f"Sample size planning followed the US²DF framework using selected components ({selected}) "
+    f"and the max-rule (n* = max(n_precision, n_power, n_model) over selected components). "
     f"{precision_clause}"
     f"{power_clause}"
     f"{model_clause}"
