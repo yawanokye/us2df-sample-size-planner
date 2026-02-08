@@ -1,23 +1,16 @@
 # app.py
 import math
+import numpy as np
 import pandas as pd
 import streamlit as st
 
 # ============================================================
-# US²DF Sample Size Planner
-# - Choose any combination of:
-#   (1) Descriptive estimation (Precision)
-#   (2) Hypothesis testing (Power)
-#   (3) Model-based analysis (Model)
+# US²DF Sample Size Planner (Unified / Universal Framework)
+# - User selects applicable components via checkboxes:
+#     Precision, Power, Model
 # - Max-rule: n* = max(selected components)
 # - Inflation: n_inflated = n* × DEFF × HVIF × 1/(1-r)
-# - Caps n_inflated at N (population) with caution message
-#
-# Fixes in this version
-# - Power effect size selector (Small/Medium/Large) with Medium default
-# - Default p1=p2=0.50, but if p1==p2 the app auto-creates a minimal detectable difference
-# - Cross-checks and guards against unrealistic n from zero difference
-# - All numeric widgets use step so Streamlit shows +/- controls
+# - Caps n_inflated at N with a caution recommendation
 # ============================================================
 
 st.set_page_config(page_title="US²DF Sample Size Planner", layout="wide")
@@ -26,7 +19,10 @@ st.set_page_config(page_title="US²DF Sample Size Planner", layout="wide")
 # Utilities (no SciPy needed)
 # ----------------------------
 def _norm_ppf(p: float) -> float:
-    """Approx inverse CDF of standard normal (Acklam approximation)."""
+    """
+    Approx inverse CDF of standard normal (Acklam approximation).
+    Good enough for z-values (e.g., 0.975 -> 1.96, 0.995 -> 2.576).
+    """
     if not (0.0 < p < 1.0):
         raise ValueError("p must be in (0,1)")
 
@@ -61,123 +57,121 @@ def _norm_ppf(p: float) -> float:
     return num / den
 
 
-def z_value_from_alpha(alpha: float) -> float:
-    """Two-sided z critical for alpha (e.g., 0.05 -> 1.96)."""
-    alpha = float(alpha)
-    alpha = min(max(alpha, 1e-9), 0.999999999)
+def z_value_two_sided(alpha: float) -> float:
+    # Two-sided critical value: z_(1 - alpha/2)
+    alpha = max(1e-12, min(0.999999999999, float(alpha)))
     return _norm_ppf(1 - alpha / 2)
 
 
-def z_value_from_conf(conf_level: float) -> float:
-    """Two-sided z critical for confidence level (e.g., 0.95 -> 1.96)."""
-    return z_value_from_alpha(1 - float(conf_level))
+def z_value_one_sided(alpha: float) -> float:
+    # One-sided critical value: z_(1 - alpha)
+    alpha = max(1e-12, min(0.999999999999, float(alpha)))
+    return _norm_ppf(1 - alpha)
 
 
-def z_beta_from_power(power: float) -> float:
-    """z value for desired power (1-beta)."""
-    power = float(power)
-    power = min(max(power, 1e-9), 0.999999999)
+def z_value_power(power: float) -> float:
+    # z_(power)
+    power = max(1e-12, min(0.999999999999, float(power)))
     return _norm_ppf(power)
 
 
 # ----------------------------
 # Adam (2020) precision logic
 # ----------------------------
-def adam_epsilon(rho: float, e: float, t: float) -> float:
-    return (rho * e) / t
+def adam_epsilon(rho: float, e: float, z: float) -> float:
+    # ε = ρe/z
+    return (rho * e) / z
 
 
 def adam_n_precision(N: int, epsilon: float) -> int:
+    # n = N / (1 + N*ε^2)
     n = N / (1 + N * (epsilon ** 2))
     return int(math.ceil(n))
+
+
+# ----------------------------
+# Power calculations (anchored)
+# ----------------------------
+# Cohen conventional effect sizes
+COHEN_D = {"Small": 0.20, "Medium": 0.50, "Large": 0.80}
+COHEN_F = {"Small": 0.10, "Medium": 0.25, "Large": 0.40}  # One-way ANOVA
+
+def n_per_group_two_sample(d: float, alpha: float, power: float) -> int:
+    """
+    Normal-approx planning formula for two independent groups (equal n):
+    n_per_group ≈ 2 * (z_(1-α/2) + z_power)^2 / d^2
+    """
+    d = max(1e-9, float(d))
+    z_alpha = z_value_two_sided(alpha)
+    z_pow = z_value_power(power)
+    n = 2.0 * (z_alpha + z_pow) ** 2 / (d ** 2)
+    return int(math.ceil(n))
+
+
+def n_per_group_oneway_anova(f: float, g: int, alpha: float, power: float) -> int:
+    """
+    Practical planning approximation for one-way ANOVA (equal group sizes).
+
+    Exact ANOVA power requires a noncentral F. To keep the tool dependency-free,
+    we use a conservative approximation by mapping ANOVA effect f to an
+    "equivalent" pairwise difference roughly d ≈ 2f, then using the two-group
+    planning formula for per-group size.
+
+    This errs on the safer side when groups > 2.
+    """
+    g = max(2, int(g))
+    f = max(1e-9, float(f))
+    d_equiv = 2.0 * f
+    return n_per_group_two_sample(d_equiv, alpha=alpha, power=power)
 
 
 # ----------------------------
 # Model-based heuristics
 # ----------------------------
 def green_regression_min(k: int, which: str = "individual") -> int:
+    """
+    Green (1991) rules of thumb:
+    - Overall model test: n >= 50 + 8k
+    - Individual predictors: n >= 104 + k
+    """
+    k = max(1, int(k))
     if which == "overall":
         return int(50 + 8 * k)
     return int(104 + k)
 
 
 def logistic_epv_min(k: int, event_rate: float, epv: int = 10) -> int:
-    event_rate = max(1e-9, float(event_rate))
+    """
+    EPV rule (planning heuristic): required events >= EPV * k
+    total n >= (EPV * k) / event_rate
+    """
+    k = max(1, int(k))
+    epv = max(5, int(epv))
+    event_rate = max(1e-9, min(0.999999999, float(event_rate)))
     return int(math.ceil((epv * k) / event_rate))
 
 
 def approx_cfa_free_params(latents: int, indicators_per_latent: int) -> int:
-    L = int(latents)
-    m = int(indicators_per_latent)
+    """
+    Simple planning approximation for CFA/SEM free parameters.
+    (Not exact, intended for planning only)
+    """
+    L = max(1, int(latents))
+    m = max(2, int(indicators_per_latent))
     total_ind = L * m
-    loadings = (m - 1) * L          # 1 loading fixed per latent
-    errors = total_ind              # indicator error variances
+
+    loadings = (m - 1) * L
+    errors = total_ind
     latent_var_cov = L + (L * (L - 1)) // 2
-    return int(loadings + errors + latent_var_cov)
+
+    p = loadings + errors + latent_var_cov
+    return int(p)
 
 
 def sem_min_n_by_ratio(params: int, ratio: int = 10) -> int:
+    params = max(1, int(params))
+    ratio = max(5, int(ratio))
     return int(params * ratio)
-
-
-# ----------------------------
-# Power planning (no SciPy)
-# ----------------------------
-def power_n_two_group_continuous(alpha: float, power: float, d: float, allocation: float = 0.5) -> int:
-    """
-    Two-group comparison, continuous outcome (Cohen's d).
-    Total n ≈ (zα/2 + zβ)^2 * (1/p + 1/(1-p)) / d^2
-    """
-    d = max(1e-6, float(d))
-    p = min(max(float(allocation), 0.05), 0.95)
-    z_a = z_value_from_alpha(alpha)
-    z_b = z_beta_from_power(power)
-    n_total = ((z_a + z_b) ** 2) * (1 / p + 1 / (1 - p)) / (d ** 2)
-    return int(math.ceil(n_total))
-
-
-def power_n_two_proportions(alpha: float, power: float, p1: float, p2: float, allocation: float = 0.5) -> int:
-    """
-    Two-group comparison, proportions (normal approximation planning).
-    Prevents blow-ups by requiring a non-zero difference.
-    """
-    p1 = min(max(float(p1), 1e-6), 1 - 1e-6)
-    p2 = min(max(float(p2), 1e-6), 1 - 1e-6)
-    diff = abs(p1 - p2)
-    diff = max(diff, 1e-6)
-
-    z_a = z_value_from_alpha(alpha)
-    z_b = z_beta_from_power(power)
-
-    pbar = (p1 + p2) / 2
-    term1 = z_a * math.sqrt(2 * pbar * (1 - pbar))
-    term2 = z_b * math.sqrt(p1 * (1 - p1) + p2 * (1 - p2))
-    n_per_group = ((term1 + term2) ** 2) / (diff ** 2)
-
-    alloc = min(max(float(allocation), 0.05), 0.95)
-    adj = (1 / alloc + 1 / (1 - alloc)) / 4  # 1 at balanced
-    n_total = 2 * n_per_group * adj
-    return int(math.ceil(n_total))
-
-
-def power_n_anova_continuous(alpha: float, power: float, f: float, groups: int) -> int:
-    """
-    One-way ANOVA planning approximation using Cohen's f.
-    n_total ≈ ((zα/2 + zβ)^2 / f^2) * (g - 1)
-    """
-    f = max(1e-6, float(f))
-    g = max(3, int(groups))
-    z_a = z_value_from_alpha(alpha)
-    z_b = z_beta_from_power(power)
-    n_total = ((z_a + z_b) ** 2) * (g - 1) / (f ** 2)
-    return int(math.ceil(n_total))
-
-
-# Effect size defaults
-COHEN_D = {"Small": 0.20, "Medium": 0.50, "Large": 0.80}
-COHEN_F = {"Small": 0.10, "Medium": 0.25, "Large": 0.40}
-# Practical deltas for proportions (absolute difference |p1-p2|)
-PROP_DELTA = {"Small": 0.05, "Medium": 0.10, "Large": 0.20}
 
 
 # ============================================================
@@ -185,175 +179,192 @@ PROP_DELTA = {"Small": 0.05, "Medium": 0.10, "Large": 0.20}
 # ============================================================
 st.sidebar.title("Inputs (Step-by-step)")
 
-st.sidebar.markdown("### Step 1. Choose components")
-st.sidebar.caption("Tick what applies. You can select one, two, or all three.")
-precision_in_play = st.sidebar.checkbox("Descriptive estimation (Precision)", value=False)
-power_in_play = st.sidebar.checkbox("Hypothesis testing (Power)", value=True)
-model_in_play = st.sidebar.checkbox("Model-based analysis (Model)", value=False)
+st.sidebar.markdown("### Step 1, Choose which components apply")
+st.sidebar.caption(
+    "Tick only what is applicable for your study. You can select one, two, or all three."
+)
+use_precision = st.sidebar.checkbox("Use Precision component", value=True)
+use_power = st.sidebar.checkbox("Use Power component", value=True)
+use_model = st.sidebar.checkbox("Use Model component", value=False)
 
-if not (precision_in_play or power_in_play or model_in_play):
-    st.sidebar.error("Select at least one component. Precision has been turned on.")
-    precision_in_play = True
+if not (use_precision or use_power or use_model):
+    st.sidebar.error("Select at least one component: Precision, Power, or Model.")
 
-st.sidebar.markdown("### Step 2. Outcome type")
-st.sidebar.caption("Default is Categorical (proportions).")
+st.sidebar.markdown("### Step 2, Study set-up")
+# Measurement Scale default should be Categorical
 outcome_type = st.sidebar.selectbox(
     "Measurement Scale of the Estimand",
     ["Categorical (proportions)", "Continuous (means, scales)"],
-    index=0,
+    index=0  # default categorical
 )
-is_categorical = outcome_type.startswith("Categorical")
+st.sidebar.caption("Default is **Categorical (proportions)**. Change it if your estimand is continuous.")
 
-st.sidebar.markdown("### Step 3. Population and confidence")
-N = int(st.sidebar.number_input("Population size (N)", min_value=1, value=50000, step=100))
-conf_level = st.sidebar.radio("Confidence level (for precision)", ["95%", "99%"], index=0)
+# Use number_input with steppers (+ / -) instead of sliders
+N = int(
+    st.sidebar.number_input(
+        "Population size (N)",
+        min_value=1,
+        value=50000,
+        step=100
+    )
+)
+
+conf_level = st.sidebar.radio("Confidence level", ["95%", "99%"], index=0)
 conf_level_val = 0.95 if conf_level == "95%" else 0.99
-t_conf = z_value_from_conf(conf_level_val)
+# Convert confidence level to alpha for precision z
+alpha_precision = 1.0 - conf_level_val
+z_precision = z_value_two_sided(alpha_precision)
 
 # ----------------------------
-# Step 4. Precision
+# Precision (Step 3)
 # ----------------------------
-st.sidebar.markdown("### Step 4. Precision settings")
-epsilon = None
-rho = None
-e = None
-n_precision = None
+st.sidebar.markdown("### Step 3, Precision settings (Adam, 2020)")
+st.sidebar.caption("Only needed if you selected the Precision component.")
 
-if precision_in_play:
-    st.sidebar.caption("Set accuracy e. Typical: 0.05 for proportions, 0.03 for continuous scales.")
-    rho = 2.0 if is_categorical else 4.0
-    default_e = 0.05 if is_categorical else 0.03
-    e_key = "e_categorical" if is_categorical else "e_continuous"
+# Default e depends on outcome type, but user can still adjust
+if outcome_type.startswith("Categorical"):
+    rho = 2.0
+    default_e = 0.05
+else:
+    rho = 4.0
+    default_e = 0.03
 
-    e = st.sidebar.number_input(
+e = float(
+    st.sidebar.number_input(
         "Desired degree of accuracy (e)",
         min_value=0.001,
         max_value=0.20,
-        value=default_e,
+        value=float(default_e),
         step=0.001,
-        key=e_key
+        disabled=not use_precision,
+        help="Default: 0.05 for categorical, 0.03 for continuous. You can change it."
     )
-    epsilon = adam_epsilon(rho=rho, e=e, t=t_conf)
-else:
-    st.sidebar.caption("Not selected, precision calculation will be skipped.")
+)
+
+epsilon = adam_epsilon(rho=rho, e=e, z=z_precision) if use_precision else None
 
 # ----------------------------
-# Step 5. Power
+# Power (Step 4)
 # ----------------------------
-st.sidebar.markdown("### Step 5. Power settings")
-alpha = None
-power = None
-design_type = None
-effect_size_cat = None
-groups_g = 1
-n_power = None
-n_power_note = ""
+st.sidebar.markdown("### Step 4, Power settings")
+st.sidebar.caption("Only needed if you selected the Power component.")
 
-if power_in_play:
-    st.sidebar.caption("Defaults: α=0.05 and 80% power.")
-    alpha = st.sidebar.number_input("Significance level (α)", min_value=0.001, max_value=0.20, value=0.05, step=0.001)
-    power = st.sidebar.number_input("Desired power (1−β)", min_value=0.50, max_value=0.99, value=0.80, step=0.01)
+alpha = float(
+    st.sidebar.number_input(
+        "Significance level (α)",
+        min_value=0.001,
+        max_value=0.20,
+        value=0.05,
+        step=0.001,
+        disabled=not use_power
+    )
+)
 
-    effect_size_cat = st.sidebar.radio("Expected effect size", ["Small", "Medium", "Large"], index=1)
-    design_type = st.sidebar.selectbox("Inferential design", ["Two-group comparison", "ANOVA (3+ groups)"], index=0)
+target_power = float(
+    st.sidebar.number_input(
+        "Target power (1−β)",
+        min_value=0.50,
+        max_value=0.99,
+        value=0.80,
+        step=0.01,
+        disabled=not use_power
+    )
+)
 
-    if design_type == "Two-group comparison":
-        groups_g = 2
-        st.sidebar.caption("Groups (g): 2")
+effect_size_label = st.sidebar.radio(
+    "Expected effect size (Cohen convention)",
+    ["Small", "Medium", "Large"],
+    index=1,  # Medium default
+    disabled=not use_power
+)
 
-        if is_categorical:
-            st.sidebar.caption("Defaults p1=p2=0.50. If p1 equals p2, the app applies the effect-size delta.")
-            p1 = st.sidebar.number_input("Expected proportion in Group 1 (p1)", min_value=0.01, max_value=0.99, value=0.50, step=0.01, format="%.2f")
-            p2 = st.sidebar.number_input("Expected proportion in Group 2 (p2)", min_value=0.01, max_value=0.99, value=0.50, step=0.01, format="%.2f")
+# Support 2+ groups (ANOVA-style)
+design_type = st.sidebar.selectbox(
+    "Inferential design (for power)",
+    ["Single group / one sample", "Two independent groups", "One-way ANOVA (k groups)"],
+    index=1,
+    disabled=not use_power
+)
 
-            # Guard: if user leaves p1==p2, auto-create detectable difference using effect size category
-            if abs(p1 - p2) < 1e-9:
-                delta = PROP_DELTA[effect_size_cat]
-                # keep within (0,1)
-                p2_auto = min(max(p1 + delta, 0.01), 0.99)
-                if abs(p2_auto - p1) < 1e-9:
-                    p2_auto = min(max(p1 - delta, 0.01), 0.99)
-                st.sidebar.warning(
-                    f"p1 equals p2, so power is undefined for a zero difference. "
-                    f"Using {effect_size_cat.lower()} delta={delta:.2f} to set p2={p2_auto:.2f} for planning."
-                )
-                p2 = p2_auto
+groups_k = 1
+if use_power and design_type in ["Two independent groups", "One-way ANOVA (k groups)"]:
+    groups_k = int(
+        st.sidebar.number_input(
+            "Number of groups (k)",
+            min_value=2,
+            value=2 if design_type == "Two independent groups" else 3,
+            step=1
+        )
+    )
 
-            n_power = power_n_two_proportions(alpha=alpha, power=power, p1=p1, p2=p2)
-            n_power_note = f"Two-proportion planning: p1={p1:.2f}, p2={p2:.2f}, α={alpha:.3f}, power={power:.2f}."
-
-        else:
-            d_default = COHEN_D[effect_size_cat]
-            st.sidebar.caption("Cohen’s d defaults: small=0.20, medium=0.50, large=0.80.")
-            d = st.sidebar.number_input("Expected effect size (Cohen’s d)", min_value=0.10, max_value=2.00, value=float(d_default), step=0.05, format="%.2f")
-            n_power = power_n_two_group_continuous(alpha=alpha, power=power, d=d)
-            n_power_note = f"Two-sample planning: d={d:.2f}, α={alpha:.3f}, power={power:.2f}."
-
-    else:
-        groups_g = int(st.sidebar.number_input("Number of groups (g)", min_value=3, max_value=50, value=3, step=1))
-        f_default = COHEN_F[effect_size_cat]
-        st.sidebar.caption("Cohen’s f defaults: small=0.10, medium=0.25, large=0.40.")
-        f = st.sidebar.number_input("Expected effect size (Cohen’s f)", min_value=0.05, max_value=1.00, value=float(f_default), step=0.05, format="%.2f")
-        n_power = power_n_anova_continuous(alpha=alpha, power=power, f=f, groups=groups_g)
-        n_power_note = f"ANOVA planning: f={f:.2f}, g={groups_g}, α={alpha:.3f}, power={power:.2f}."
-else:
-    st.sidebar.caption("Not selected, power calculation will be skipped.")
+st.sidebar.caption(
+    "Tip: For **Two independent groups**, the app computes **n per group** then multiplies by k. "
+    "For **ANOVA**, it uses a conservative approximation to keep the tool dependency-free."
+)
 
 # ----------------------------
-# Step 6. Model
+# Model (Step 5)
 # ----------------------------
-st.sidebar.markdown("### Step 6. Model settings")
-model_context = "None"
+st.sidebar.markdown("### Step 5, Model settings")
+st.sidebar.caption("Only needed if you selected the Model component.")
+
+model_context = st.sidebar.selectbox(
+    "Model type",
+    ["None", "Multiple regression", "Logistic regression", "SEM / CFA"],
+    index=0,
+    disabled=not use_model
+)
+
+# Defaults so vars exist
 k_predictors = 10
 event_rate = 0.20
 epv = 10
 latents = 3
 indicators_per_latent = 4
 sem_ratio = 10
-n_model = None
-sem_params_p = None
-model_note = ""
 
-if model_in_play:
-    st.sidebar.caption("Pick the main analysis model to apply a planning heuristic.")
-    model_context = st.sidebar.selectbox("Model type", ["Multiple regression", "Logistic regression", "SEM / CFA"], index=0)
-
-    if model_context == "Multiple regression":
-        k_predictors = int(st.sidebar.number_input("Number of predictors (k)", min_value=1, value=10, step=1))
-        n_model = green_regression_min(k=k_predictors, which="individual")
-        model_note = f"Green (1991): n ≥ 104 + k (k={k_predictors})."
-
-    elif model_context == "Logistic regression":
-        k_predictors = int(st.sidebar.number_input("Number of predictors (k)", min_value=1, value=10, step=1))
-        event_rate = float(st.sidebar.number_input("Event rate", min_value=0.01, max_value=0.99, value=0.20, step=0.01, format="%.2f"))
-        epv = int(st.sidebar.number_input("EPV (events per variable)", min_value=5, max_value=50, value=10, step=1))
-        n_model = logistic_epv_min(k=k_predictors, event_rate=event_rate, epv=epv)
-        model_note = f"EPV planning: total n ≥ ({epv}×{k_predictors})/{event_rate:.2f}."
-
-    elif model_context == "SEM / CFA":
-        latents = int(st.sidebar.number_input("Latent variables", min_value=1, value=3, step=1))
-        indicators_per_latent = int(st.sidebar.number_input("Indicators per latent", min_value=2, value=4, step=1))
-        sem_ratio = int(st.sidebar.number_input("n per parameter ratio", min_value=5, max_value=30, value=10, step=1))
-        sem_params_p = approx_cfa_free_params(latents=latents, indicators_per_latent=indicators_per_latent)
-        n_model = sem_min_n_by_ratio(params=sem_params_p, ratio=sem_ratio)
-        model_note = f"SEM/CFA planning: p≈{sem_params_p}, n≈p×{sem_ratio}."
-else:
-    st.sidebar.caption("Not selected, model-based calculation will be skipped.")
+if use_model and model_context == "Multiple regression":
+    k_predictors = int(st.sidebar.number_input("Number of predictors (k)", min_value=1, value=10, step=1))
+elif use_model and model_context == "Logistic regression":
+    k_predictors = int(st.sidebar.number_input("Number of predictors (k)", min_value=1, value=10, step=1))
+    event_rate = float(
+        st.sidebar.number_input(
+            "Event rate (for logistic), e.g., 0.20",
+            min_value=0.01, max_value=0.99, value=0.20, step=0.01
+        )
+    )
+    epv = int(st.sidebar.number_input("EPV (events per variable)", min_value=5, max_value=50, value=10, step=1))
+elif use_model and model_context == "SEM / CFA":
+    latents = int(st.sidebar.number_input("Latent variables (L)", min_value=1, value=3, step=1))
+    indicators_per_latent = int(st.sidebar.number_input("Indicators per latent (m)", min_value=2, value=4, step=1))
+    sem_ratio = int(st.sidebar.number_input("n per parameter ratio", min_value=5, max_value=30, value=10, step=1))
 
 # ----------------------------
-# Step 7. Field adjustments
+# Field adjustments (Step 6)
 # ----------------------------
-st.sidebar.markdown("### Step 7. Field adjustments")
-st.sidebar.caption("Use these when you expect clustering, inflation, or nonresponse.")
+st.sidebar.markdown("### Step 6, Field adjustments")
+st.sidebar.caption("Use Yes/No first. Only Yes enables the input.")
 
 use_deff = st.sidebar.radio("Apply DEFF?", ["No", "Yes"], horizontal=True, key="use_deff")
-deff_val = st.sidebar.number_input("DEFF", min_value=1.0, max_value=10.0, value=1.0, step=0.1, disabled=(use_deff == "No"), key="deff_input")
+deff_val = st.sidebar.number_input(
+    "DEFF",
+    min_value=1.0, max_value=10.0, value=1.0, step=0.1,
+    disabled=(use_deff == "No"), key="deff_input"
+)
 
 use_hvif = st.sidebar.radio("Apply HVIF?", ["No", "Yes"], horizontal=True, key="use_hvif")
-hvif_val = st.sidebar.number_input("HVIF", min_value=1.0, max_value=5.0, value=1.0, step=0.1, disabled=(use_hvif == "No"), key="hvif_input")
+hvif_val = st.sidebar.number_input(
+    "HVIF",
+    min_value=1.0, max_value=5.0, value=1.0, step=0.1,
+    disabled=(use_hvif == "No"), key="hvif_input"
+)
 
 use_nr = st.sidebar.radio("Apply Nonresponse adjustment?", ["No", "Yes"], horizontal=True, key="use_nr")
-nr_val = st.sidebar.number_input("Nonresponse rate (r)", min_value=0.0, max_value=0.90, value=0.05, step=0.05, disabled=(use_nr == "No"), key="nr_input")
+nr_val = st.sidebar.number_input(
+    "Nonresponse rate (r)",
+    min_value=0.0, max_value=0.90, value=0.05, step=0.01,
+    disabled=(use_nr == "No"), key="nr_input"
+)
 
 DEFF = float(deff_val) if use_deff == "Yes" else 1.0
 HVIF = float(hvif_val) if use_hvif == "Yes" else 1.0
@@ -362,89 +373,146 @@ r = float(nr_val) if use_nr == "Yes" else 0.0
 # ============================================================
 # Core calculations
 # ============================================================
-candidates = {}
-
-if precision_in_play:
+n_precision = None
+if use_precision:
     n_precision = adam_n_precision(N=N, epsilon=epsilon)
-    candidates["Precision"] = n_precision
 
-if power_in_play:
-    candidates["Power"] = int(n_power)
+n_power = None
+power_note = "—"
+if use_power:
+    if design_type == "Single group / one sample":
+        # Use two-group formula without the factor 2 (rough planning) by halving the two-group requirement.
+        # Conservative: we still keep it close to two-group by not halving too aggressively.
+        d = COHEN_D[effect_size_label]
+        n_pg = n_per_group_two_sample(d=d, alpha=alpha, power=target_power)
+        n_power = int(math.ceil(n_pg))  # treat as "total n"
+        power_note = f"Computed from α={alpha:g}, power={target_power:g}, effect={effect_size_label} (single-group planning)."
+    elif design_type == "Two independent groups":
+        d = COHEN_D[effect_size_label]
+        n_pg = n_per_group_two_sample(d=d, alpha=alpha, power=target_power)
+        n_power = int(n_pg * groups_k)
+        power_note = f"Two-group planning: n≈{n_pg} per group × k={groups_k} (α={alpha:g}, power={target_power:g})."
+    else:  # One-way ANOVA
+        f = COHEN_F[effect_size_label]
+        n_pg = n_per_group_oneway_anova(f=f, g=groups_k, alpha=alpha, power=target_power)
+        n_power = int(n_pg * groups_k)
+        power_note = f"ANOVA planning (approx): n≈{n_pg} per group × k={groups_k} (α={alpha:g}, power={target_power:g})."
 
-if model_in_play:
-    candidates["Model"] = int(n_model)
+n_model = None
+model_note = "—"
+if use_model:
+    if model_context == "Multiple regression":
+        n_model = green_regression_min(k=k_predictors, which="individual")
+        model_note = f"Green (1991) individual-predictor rule: n ≥ 104 + k (k={k_predictors})."
+    elif model_context == "Logistic regression":
+        n_model = logistic_epv_min(k=k_predictors, event_rate=event_rate, epv=epv)
+        model_note = f"EPV planning: n ≥ (EPV×k)/event_rate with EPV={epv}, k={k_predictors}, event rate={event_rate:g}."
+    elif model_context == "SEM / CFA":
+        p = approx_cfa_free_params(latents=latents, indicators_per_latent=indicators_per_latent)
+        n_model = sem_min_n_by_ratio(params=p, ratio=sem_ratio)
+        model_note = f"SEM planning: params≈{p}, ratio={sem_ratio}:1 ⇒ n≈{n_model}."
+    else:
+        n_model = None
+        model_note = "Model not selected."
 
-n_star = int(max(candidates.values()))
-binding_constraints = [k for k, v in candidates.items() if v == n_star]
-binding_text = ", ".join(binding_constraints)
+candidates = []
+labels = []
+if n_precision is not None:
+    candidates.append(n_precision); labels.append("Precision")
+if n_power is not None:
+    candidates.append(n_power); labels.append("Power")
+if n_model is not None:
+    candidates.append(n_model); labels.append("Model")
+
+n_star = int(max(candidates)) if candidates else None
+
+# Binding constraint (handle ties cleanly)
+binding = "—"
+if n_star is not None:
+    tied = []
+    if n_precision is not None and n_precision == n_star: tied.append("Precision")
+    if n_power is not None and n_power == n_star: tied.append("Power")
+    if n_model is not None and n_model == n_star: tied.append("Model")
+    binding = ", ".join(tied) if tied else "—"
 
 inflator = (DEFF * HVIF) / max(1e-9, (1 - r))
-n_inflated_raw = int(math.ceil(n_star * inflator))
-exceeds_population = n_inflated_raw > N
+n_inflated_raw = int(math.ceil((n_star or 0) * inflator)) if n_star is not None else None
+exceeds_population = (n_inflated_raw is not None) and (n_inflated_raw > N)
 n_inflated = N if exceeds_population else n_inflated_raw
 
 # ============================================================
 # Main UI
 # ============================================================
-st.title("Unified Sample Size Determination Framework (US²DF) Sample Size Planner")
+st.title("US²DF Sample Size Planner")
 st.write(
-    "Tick the components that apply (Precision, Power, Model). "
-    "The planner applies the max-rule and adjusts for field conditions."
+    "Select the applicable components (Precision, Power, Model). "
+    "US²DF uses the max-rule n* = max(selected components), then inflates for DEFF, HVIF, and nonresponse."
 )
 
 c1, c2, c3 = st.columns(3)
-c1.metric("Sample Size Estimate based on Precision", f"{n_precision:,}" if precision_in_play else "—")
-c2.metric("Sample Size Estimate based on Power", f"{n_power:,}" if power_in_play else "—")
-c3.metric("Sample Size Estimate based on Model", f"{n_model:,}" if model_in_play else "—")
+c1.metric("Sample Size Estimate based on Precision", f"{n_precision:,}" if n_precision is not None else "—")
+c2.metric("Sample Size Estimate based on Power", f"{n_power:,}" if n_power is not None else "—")
+c3.metric("Sample Size Estimate based on Model", f"{n_model:,}" if n_model is not None else "—")
 
 st.markdown("## US²DF Recommendation")
 colA, colB = st.columns(2)
-colA.metric("Base (max-rule) sample size, n*", f"{n_star:,}")
-colB.metric("Adjusted and Final Recommended Sample Size", f"{n_inflated:,}")
+colA.metric("Base sample size (max-rule), n*", f"{n_star:,}" if n_star is not None else "—")
+colB.metric("Adjusted and Final Recommended Sample Size", f"{n_inflated:,}" if n_inflated is not None else "—")
 
-st.success(f"Binding constraint(s): **{binding_text}**")
+if n_star is not None:
+    st.success(f"Binding constraint: **{binding}**")
 
 if exceeds_population:
     st.warning(
         f"**Caution:** The adjusted sample size ({n_inflated_raw:,}) exceeds the population (N={N:,}). "
-        f"Consider a **census/near-census** where feasible. "
-        f"If not feasible, revise DEFF/HVIF/nonresponse assumptions, or revise precision/power/model targets, "
-        f"and report this limitation clearly."
+        f"US²DF recommends a **census/near-census** approach where feasible. "
+        f"If a census is not feasible, revise inflation drivers (DEFF/HVIF/nonresponse) "
+        f"or revise precision/power/model targets, and report this limitation clearly."
     )
 
-# Breakdown
+# ============================================================
+# Breakdown table
+# ============================================================
 rows = []
+rows.append({
+    "Component": "Precision selected?",
+    "Value": "Yes" if use_precision else "No",
+    "Notes": "Adam (2020) adjusted finite-population precision logic."
+})
+rows.append({
+    "Component": "Power selected?",
+    "Value": "Yes" if use_power else "No",
+    "Notes": "Power computed from α and target power, with effect-size convention and group design."
+})
+rows.append({
+    "Component": "Model selected?",
+    "Value": "Yes" if use_model else "No",
+    "Notes": "Model-based planning heuristics for regression, logistic EPV, and SEM/CFA."
+})
 
 rows.append({
     "Component": "Sample Size Estimate based on Precision",
-    "Value": n_precision if precision_in_play else "—",
+    "Value": n_precision if n_precision is not None else "—",
     "Notes": (
-        f"Adam (2020): ε=ρe/t with ρ={rho:g}, e={e:g}, z={t_conf:.4f}; n=N/(1+Nε²)"
-        if precision_in_play else "Not selected."
+        f"Adam (2020): ε=ρe/z with ρ={rho:g}, e={e:g}, z={z_precision:.4f}; n=N/(1+Nε²)"
+        if use_precision else "Not applied"
     )
 })
-
 rows.append({
     "Component": "Sample Size Estimate based on Power",
-    "Value": n_power if power_in_play else "—",
-    "Notes": (
-        f"{n_power_note} Effect size category={effect_size_cat}."
-        if power_in_play else "Not selected."
-    )
+    "Value": n_power if n_power is not None else "—",
+    "Notes": power_note if use_power else "Not applied"
 })
-
 rows.append({
     "Component": "Sample Size Estimate based on Model",
-    "Value": n_model if model_in_play else "—",
-    "Notes": model_note if model_in_play else "Not selected."
+    "Value": n_model if n_model is not None else "—",
+    "Notes": model_note if use_model else "Not applied"
 })
-
 rows.append({
     "Component": "Base sample size (max-rule), n*",
-    "Value": n_star,
-    "Notes": f"n* = max({', '.join(candidates.keys())})"
+    "Value": n_star if n_star is not None else "—",
+    "Notes": "n* = max(selected components)"
 })
-
 rows.append({
     "Component": "DEFF applied?",
     "Value": "Yes" if use_deff == "Yes" else "No",
@@ -461,50 +529,34 @@ rows.append({
     "Notes": f"r = {r:g}"
 })
 rows.append({
-    "Component": "Inflation factor",
-    "Value": round(inflator, 4),
-    "Notes": "Inflator = DEFF × HVIF ÷ (1−r)"
-})
-rows.append({
-    "Component": "Final Recommended Sample Size",
-    "Value": n_inflated,
+    "Component": "Final n_inflated",
+    "Value": n_inflated if n_inflated is not None else "—",
     "Notes": "n_inflated = n* × DEFF × HVIF × 1/(1−r) (capped at N if needed)"
 })
 
 df_breakdown = pd.DataFrame(rows)
 st.dataframe(df_breakdown, use_container_width=True)
 
-# Copy-ready methods text
+# ============================================================
+# Copy-ready Methods text
+# ============================================================
 st.subheader("Copy-ready Methods text")
-selected = ", ".join(candidates.keys())
 
-precision_clause = ""
-if precision_in_play:
-    precision_clause = (
-        f"Precision requirements were computed using Adam (2020) "
-        f"(ε=ρe/t; ρ={rho:g}, e={e:g}, z={t_conf:.4f}) giving n_precision={n_precision:,}. "
-    )
+selected_parts = []
+if use_precision: selected_parts.append("precision-based estimation")
+if use_power: selected_parts.append("power-based requirements")
+if use_model: selected_parts.append("model-based constraints")
 
-power_clause = ""
-if power_in_play:
-    power_clause = (
-        f"Power planning used α={alpha:.3f} and power={power:.2f} with effect size {effect_size_cat.lower()}, "
-        f"giving n_power={n_power:,}. "
-    )
-
-model_clause = ""
-if model_in_play:
-    model_clause = f"Model-based requirements were assessed using planning heuristics (n_model={n_model:,}). "
+selected_text = ", ".join(selected_parts) if selected_parts else "the selected components"
 
 methods_text = (
-    f"Sample size planning followed the US²DF framework using selected components ({selected}) "
-    f"and the max-rule (n* = max(n_precision, n_power, n_model) over selected components). "
-    f"{precision_clause}{power_clause}{model_clause}"
-    f"The base sample size (n*={n_star:,}) was adjusted for field conditions using "
-    f"DEFF={DEFF:g}, HVIF={HVIF:g}, and nonresponse r={r:g}, "
-    f"yielding a final recommended sample size of n={n_inflated:,} "
-    f"(Adam, Gyasi, Owusu Junior & Gyamfi, 2026)."
+    f"Sample size was determined using the US²DF framework by combining {selected_text} "
+    f"and applying the max-rule (n* = max(n_precision, n_power, n_model) over the selected components). "
+    f"The base sample was then adjusted for field conditions using DEFF={DEFF:g}, HVIF={HVIF:g}, and "
+    f"an anticipated nonresponse rate r={r:g}, yielding a final recommended sample size of n={n_inflated:,} "
+    f"(Adam, Gyasi, Owusu Jnr & Gyamfi, 2026)."
 )
+
 st.code(methods_text, language="text")
 
 st.markdown("---")
@@ -512,12 +564,15 @@ st.markdown(
     """
 **Cite as:**
 
-> **Adam, A.M., Gyasi, R.M., Owusu Junior, P. & Gyamfi, E.N. (2026).**  
-*Unified Sample Size Determination Framework (US²DF): Integrating Precision, Power, and Model-Based Requirements for Survey Research.*
+> **Adam, A.M., Gyasi, R.M., Owusu Jnr, P. & Gyamfi, E.N. (2026).**  
+> *Unified Sample Size Determination Framework (US²DF): Integrating Precision, Power, and Model-Based Requirements for Survey Studies.*
 """,
     unsafe_allow_html=False
 )
 
+# ============================================================
+# Downloads
+# ============================================================
 st.markdown("## Downloads")
 st.download_button(
     "Download breakdown table (CSV)",
