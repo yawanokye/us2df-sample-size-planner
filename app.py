@@ -153,23 +153,33 @@ conf_level_val = 0.95 if conf_level == "95%" else 0.99
 t = z_value(conf_level_val)
 
 # ----------------------------
-# Precision settings (Adam 2020 uses rho)
+# Precision settings (Adam, 2020)
 # ----------------------------
 st.sidebar.subheader("Precision settings (Adam, 2020)")
-if outcome_type.startswith("Categorical"):
-    rho = 2.0
-    default_e = 0.05
-else:
-    rho = 4.0
-    default_e = 0.03
 
-e = float(
-    st.sidebar.number_input(
-        "Desired degree of accuracy (e)",
-        min_value=0.001, max_value=0.20, value=default_e, step=0.001
-    )
+is_categorical = outcome_type.startswith("Categorical")
+
+# Adam (2020) scale parameters
+rho = 2.0 if is_categorical else 4.0
+default_e = 0.05 if is_categorical else 0.03
+
+# Separate widget keys preserve user edits per scale
+e_key = "e_categorical" if is_categorical else "e_continuous"
+
+e = st.sidebar.number_input(
+    "Desired degree of accuracy (e)",
+    min_value=0.001,
+    max_value=0.20,
+    value=default_e,
+    step=0.001,
+    key=e_key
 )
+
 epsilon = adam_epsilon(rho=rho, e=e, t=t)
+st.sidebar.caption(
+    "Recommended defaults: e = 0.05 (categorical), e = 0.03 (continuous)"
+)
+
 
 # ----------------------------
 # Power settings (only if relevant)
@@ -465,6 +475,7 @@ st.download_button(
 #Update UI toggles and reporting labels
 #Update UI toggles and reporting labels
 #Update UI toggles and reporting labels
+
 
 
 
