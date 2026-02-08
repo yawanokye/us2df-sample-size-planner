@@ -265,4 +265,144 @@ use_hvif = st.sidebar.radio("Apply HVIF?", ["No", "Yes"], horizontal=True, key="
 hvif_val = st.sidebar.number_input("HVIF", min_value=1.0, max_value=5.0, value=1.0, step=0.1,
                                    disabled=(use_hvif == "No"), key="hvif_input")
 
-use_nr = st.sidebar.radio("Apply Nonresponse_
+use_nr = st.sidebar.radio("Apply Nonresponse adjustment?", ["No", "Yes"], horizontal=True, key="use_nr")
+nr_val = st.sidebar.number_input("Nonresponse rate (r)", min_value=0.0, max_value=0.90, value=0.05, step=0.01,
+                                 disabled=(use_nr == "No"), key="nr_input")
+
+DEFF = float(deff_val) if use_deff == "Yes" else 1.0
+HVIF = float(hvif_val) if use_hvif == "Yes" else 1.0
+r = float(nr_val) if use_nr == "Yes" else 0.0
+
+# ============================================================
+# Core calculations
+# ============================================================
+n_precision = adam_n_precision(N=N, epsilon=epsilon) if use_precision else None
+
+# Power: benchmark (always computed), analytical (optional check)
+n_power_benchmark = None
+n_power_analytic = None
+power_note = "Not applied"
+
+if use_power:
+    per_group = int(POWER_BENCHMARKS_PER_GROUP[effect_size])
+
+    if design_type == "Single group (one sample)":
+        n_power_benchmark = per_group
+    elif design_type == "Two independent groups":
+        n_power_benchmark = per_group * 2
+    else:
+        n_power_benchmark = per_group * groups_k
+
+    power_note = f"Benchmark: {effect_size} = {per_group} per group (scaled by groups)."
+
+    if show_analytic:
+        # Analytical check is shown, but only drives n_power if user overrides
+        n_power_analytic = n_two_proportions_total(alpha=alpha, power=target_power, p1=p1, p2=p2)
+
+# Decide which n_power is used in max-rule
+if not use_power:
+    n_power = None
+else:
+    if power_mode == "Analytical drives (override)" and n_power_analytic is not None:
+        n_power = n_power_analytic
+        power_note += f" Using analytical override (α={alpha:.3f}, power={target_power:.2f}, p1={p1:.2f}, p2={p2:.2f})."
+    else:
+        n_power = n_power_benchmark
+        power_note += f" α={alpha:.3f}, power={target_power:.2f} are not used to change n in benchmark mode."
+
+# Model-based
+n_model = None
+model_note = "Not applied"
+if use_model:
+    if model_context == "Multiple regression":
+        n_model = green_regression_min(k=k_predictors, which="individual")
+        model_note = f"Green (1991): n ≥ 104 + k, k={k_predictors}."
+    elif model_context == "Logistic regression":
+        n_model = logistic_epv_min(k=k_predictors, event_rate=event_rate, epv=epv)
+        model_note = f"EPV planning: n ≥ (EPV×k)/event_rate with EPV={epv}, k={k_predictors}, event rate={event_rate:g}."
+    elif model_context == "SEM / CFA":
+        p = approx_cfa_free_params(latents=latents, indicators_per_latent=indicators_per_latent)
+        n_model = sem_min_n_by_ratio(params=p, ratio=sem_ratio)
+        model_note = f"SEM planning: params≈{p}, ratio={sem_ratio}:1 ⇒ n≈{n_model}."
+    else:
+        model_note = "Model type not selected."
+
+# Max-rule
+candidates = []
+if n_precision is not None: candidates.append(n_precision)
+if n_power is not None: candidates.append(n_power)
+if n_model is not None: candidates.append(n_model)
+n_star = int(max(candidates)) if candidates else None
+
+binding = "—"
+if n_star is not None:
+    tied = []
+    if n_precision is not None and n_precision == n_star: tied.append("Precision")
+    if n_power is not None and n_power == n_star: tied.append("Power")
+    if n_model is not None and n_model == n_star: tied.append("Model")
+    binding = ", ".join(tied)
+
+inflator = (DEFF * HVIF) / max(1e-9, (1 - r))
+n_inflated_raw = int(math.ceil(n_star * inflator)) if n_star is not None else None
+exceeds_population = (n_inflated_raw is not None) and (n_inflated_raw > N)
+n_inflated = N if exceeds_population else n_inflated_raw
+
+# ============================================================
+# Main UI
+# ============================================================
+st.title("US²DF Sample Size Planner")
+
+c1, c2, c3 = st.columns(3)
+c1.metric("Sample Size Estimate based on Precision", f"{n_precision:,}" if n_precision is not None else "—")
+c2.metric("Sample Size Estimate based on Power", f"{n_power:,}" if n_power is not None else "—")
+c3.metric("Sample Size Estimate based on Model", f"{n_model:,}" if n_model is not None else "—")
+
+st.markdown("## US²DF Recommendation")
+colA, colB = st.columns(2)
+colA.metric("Base sample size (max-rule), n*", f"{n_star:,}" if n_star is not None else "—")
+colB.metric("Adjusted and Final Recommended Sample Size", f"{n_inflated:,}" if n_inflated is not None else "—")
+
+if n_star is not None:
+    st.success(f"Binding constraint: **{binding}**")
+
+if exceeds_population:
+    st.warning(
+        f"**Caution:** The adjusted sample size ({n_inflated_raw:,}) exceeds the population (N={N:,}). "
+        f"US²DF recommends a **census/near-census** approach where feasible."
+    )
+
+# Show analytical as a check (so user sees it change)
+if use_power and show_analytic and n_power_analytic is not None:
+    st.markdown("### Power analytical check (diagnostic)")
+    st.info(
+        f"Analytical two-proportion check (balanced groups): total n ≈ {n_power_analytic:,} "
+        f"for α={alpha:.3f}, power={target_power:.2f}, p1={p1:.2f}, p2={p2:.2f}. "
+        f"{'Complementary applied (p2=1−p1).' if complementary_mode else ''}"
+    )
+    if n_power_benchmark is not None:
+        ratio = n_power_analytic / max(1, n_power_benchmark)
+        if ratio < 0.5:
+            st.warning("Analytical check is far smaller than the benchmark. Treat it as optimistic unless you have strong prior evidence.")
+        if ratio > 2.0:
+            st.warning("Analytical check is far larger than the benchmark. That usually means the assumed effect is tiny.")
+
+# Breakdown table
+rows = [
+    {"Component": "Precision", "Value": n_precision if n_precision is not None else "—",
+     "Notes": f"Adam (2020): ε=ρe/t with ρ={rho:g}, e={e:g}, z={t:.4f}; n=N/(1+Nε²)" if use_precision else "Not applied"},
+    {"Component": "Power", "Value": n_power if n_power is not None else "—", "Notes": power_note},
+    {"Component": "Model", "Value": n_model if n_model is not None else "—", "Notes": model_note},
+    {"Component": "Base sample size (n*)", "Value": n_star if n_star is not None else "—", "Notes": "Max-rule across selected components"},
+    {"Component": "Inflation factors", "Value": f"DEFF={DEFF:g}, HVIF={HVIF:g}, r={r:g}", "Notes": "n_inflated = n* × DEFF × HVIF × 1/(1−r)"},
+    {"Component": "Final recommended n", "Value": n_inflated if n_inflated is not None else "—", "Notes": "Capped at N if needed"},
+]
+df = pd.DataFrame(rows)
+st.dataframe(df, use_container_width=True)
+
+st.markdown("## Downloads")
+st.download_button(
+    "Download breakdown table (CSV)",
+    data=df.to_csv(index=False).encode("utf-8"),
+    file_name="US2DF_Breakdown.csv",
+    mime="text/csv",
+)
