@@ -330,7 +330,7 @@ n_inflated = N if exceeds_population else n_inflated_raw
 # ============================================================
 st.title("Unified Sample Size Determination Framework (US²DF) Sample Size Planner")
 st.write(
-    "Computes sample size using the max-rule: n* = max(n based on precision, n based on power, n based on model type), "
+    "Computes sample size using the max-rule: n* = max(n_precision, n_power, n_model type), "
     "then adjust for DEFF, HVIF, and nonresponse."
 )
 
@@ -475,6 +475,7 @@ st.download_button(
 #Update UI toggles and reporting labels
 #Update UI toggles and reporting labels
 #Update UI toggles and reporting labels
+
 
 
 
