@@ -11,9 +11,9 @@ import streamlit as st
 # - Inflation: n_inflated = n* × DEFF × HVIF × 1/(1-r)
 # - Caps n_inflated at N (population) with caution message
 #
-# Update requested:
-# - Add "Complementary proportions" switch for 2-group categorical power:
-#   If ON, enforce p2 = 1 - p1 (p2 is auto-filled and locked).
+# Power component:
+# - Benchmark mode (default): US²DF 400/100/50 per group (Small/Medium/Large)
+# - Analytical mode (optional): α, power, and effect inputs (e.g., p1/p2) drive n_power
 # ============================================================
 
 st.set_page_config(page_title="US²DF Sample Size Planner", layout="wide")
@@ -22,9 +22,7 @@ st.set_page_config(page_title="US²DF Sample Size Planner", layout="wide")
 # Utilities (no SciPy needed)
 # ----------------------------
 def _norm_ppf(p: float) -> float:
-    """
-    Approx inverse CDF of standard normal (Acklam approximation).
-    """
+    """Approx inverse CDF of standard normal (Acklam approximation)."""
     if not (0.0 < p < 1.0):
         raise ValueError("p must be in (0,1)")
 
@@ -60,21 +58,28 @@ def _norm_ppf(p: float) -> float:
 
 
 def z_value(conf_level: float) -> float:
-    # two-sided: z = Phi^{-1}(1 - alpha/2)
     alpha = 1 - conf_level
     return _norm_ppf(1 - alpha / 2)
+
+
+def z_from_alpha(alpha: float) -> float:
+    alpha = max(1e-9, min(0.999999999, float(alpha)))
+    return _norm_ppf(1 - alpha / 2)
+
+
+def z_from_power(power: float) -> float:
+    power = max(1e-9, min(0.999999999, float(power)))
+    return _norm_ppf(power)
 
 
 # ----------------------------
 # Adam (2020) precision logic
 # ----------------------------
 def adam_epsilon(rho: float, e: float, t: float) -> float:
-    # ε = ρe/t
     return (rho * e) / t
 
 
 def adam_n_precision(N: int, epsilon: float) -> int:
-    # n = N / (1 + N*ε^2)
     n = N / (1 + N * (epsilon ** 2))
     return int(math.ceil(n))
 
@@ -82,33 +87,42 @@ def adam_n_precision(N: int, epsilon: float) -> int:
 # ----------------------------
 # US²DF Power Benchmarks (PER GROUP)
 # ----------------------------
-POWER_BENCHMARKS_PER_GROUP = {
-    "Small": 400,
-    "Medium": 100,
-    "Large": 50
-}
+POWER_BENCHMARKS_PER_GROUP = {"Small": 400, "Medium": 100, "Large": 50}
+
+# Minimum practical delta safeguards (planning guardrails)
+MIN_ABS_DIFF = {"Small": 0.05, "Medium": 0.10, "Large": 0.20}  # for proportions, as a planning floor
+
+
+def n_two_proportions_total(alpha: float, power: float, p1: float, p2: float) -> int:
+    """
+    Planning formula for two independent proportions (balanced groups), normal approximation.
+    Returns TOTAL n (both groups combined).
+    """
+    p1 = max(1e-6, min(1 - 1e-6, float(p1)))
+    p2 = max(1e-6, min(1 - 1e-6, float(p2)))
+    d = abs(p1 - p2)
+    d = max(d, 1e-9)
+
+    z_a = z_from_alpha(alpha)
+    z_b = z_from_power(power)
+
+    pbar = (p1 + p2) / 2
+    term1 = z_a * math.sqrt(2 * pbar * (1 - pbar))
+    term2 = z_b * math.sqrt(p1 * (1 - p1) + p2 * (1 - p2))
+
+    n_per_group = ((term1 + term2) ** 2) / (d ** 2)
+    return int(math.ceil(2 * n_per_group))
 
 
 # ----------------------------
 # Model-based heuristics
 # ----------------------------
 def green_regression_min(k: int, which: str = "individual") -> int:
-    """
-    Green (1991) rules of thumb:
-    - Overall model test: n >= 50 + 8k
-    - Individual predictors: n >= 104 + k
-    """
     k = max(1, int(k))
-    if which == "overall":
-        return int(50 + 8*k)
-    return int(104 + k)
+    return int(50 + 8 * k) if which == "overall" else int(104 + k)
 
 
 def logistic_epv_min(k: int, event_rate: float, epv: int = 10) -> int:
-    """
-    EPV rule (planning heuristic): required events >= EPV * k
-    total n >= (EPV * k) / event_rate
-    """
     k = max(1, int(k))
     epv = max(5, int(epv))
     event_rate = max(1e-9, min(0.999999999, float(event_rate)))
@@ -116,20 +130,13 @@ def logistic_epv_min(k: int, event_rate: float, epv: int = 10) -> int:
 
 
 def approx_cfa_free_params(latents: int, indicators_per_latent: int) -> int:
-    """
-    Simple planning approximation for CFA/SEM free parameters.
-    (Not exact, intended for planning)
-    """
     L = max(1, int(latents))
     m = max(2, int(indicators_per_latent))
     total_ind = L * m
-
     loadings = (m - 1) * L
     errors = total_ind
     latent_var_cov = L + (L * (L - 1)) // 2
-
-    p = loadings + errors + latent_var_cov
-    return int(p)
+    return int(loadings + errors + latent_var_cov)
 
 
 def sem_min_n_by_ratio(params: int, ratio: int = 10) -> int:
@@ -144,7 +151,7 @@ def sem_min_n_by_ratio(params: int, ratio: int = 10) -> int:
 st.sidebar.title("Inputs (Step-by-step)")
 
 st.sidebar.markdown("### Step 1, Select applicable components")
-st.sidebar.caption("Choose one, two, or all three. US²DF will apply the max-rule on your selections.")
+st.sidebar.caption("Choose one, two, or all three. US²DF applies the max-rule on your selections.")
 use_precision = st.sidebar.checkbox("Precision component", value=True)
 use_power = st.sidebar.checkbox("Power component", value=True)
 use_model = st.sidebar.checkbox("Model component", value=False)
@@ -158,7 +165,7 @@ N = int(st.sidebar.number_input("Population size (N)", min_value=1, value=50000,
 outcome_type = st.sidebar.selectbox(
     "Measurement Scale of the Estimand",
     ["Categorical (proportions)", "Continuous (means, scales)"],
-    index=0  # default categorical
+    index=0
 )
 st.sidebar.caption("Default is Categorical (proportions). Change only if your estimand is continuous.")
 
@@ -167,7 +174,7 @@ conf_level_val = 0.95 if conf_level == "95%" else 0.99
 t = z_value(conf_level_val)
 
 # ============================================================
-# Precision (Adam, 2020)
+# Precision
 # ============================================================
 st.sidebar.markdown("### Step 3, Precision settings (Adam, 2020)")
 st.sidebar.caption("Only applies if you selected Precision.")
@@ -175,50 +182,50 @@ st.sidebar.caption("Only applies if you selected Precision.")
 is_categorical = outcome_type.startswith("Categorical")
 rho = 2.0 if is_categorical else 4.0
 default_e = 0.05 if is_categorical else 0.03
-
 e_key = "e_categorical" if is_categorical else "e_continuous"
 
 e = float(
     st.sidebar.number_input(
         "Desired degree of accuracy (e)",
         min_value=0.001, max_value=0.20,
-        value=float(default_e),
-        step=0.001,
+        value=float(default_e), step=0.001,
         disabled=not use_precision,
-        key=e_key,
-        help="Defaults: 0.05 (categorical), 0.03 (continuous). You can adjust."
+        key=e_key
     )
 )
-
 epsilon = adam_epsilon(rho=rho, e=e, t=t) if use_precision else None
 
 # ============================================================
-# Power (PER GROUP benchmarks, then scaled by number of groups)
+# Power
 # ============================================================
 st.sidebar.markdown("### Step 4, Power settings")
-st.sidebar.caption("Only applies if you selected Power. Benchmarks are PER GROUP.")
+st.sidebar.caption("Only applies if you selected Power.")
 
-alpha = float(
-    st.sidebar.number_input(
-        "Significance level (α)",
-        min_value=0.001, max_value=0.20,
-        value=0.05, step=0.001,
-        disabled=not use_power
-    )
+power_approach = st.sidebar.radio(
+    "Power approach",
+    ["US²DF benchmark (recommended)", "Analytical (inputs-driven)"],
+    index=0,
+    disabled=not use_power,
+    help="Benchmark mode uses fixed per-group values. Analytical mode uses α, power, and effect inputs."
 )
-target_power = float(
-    st.sidebar.number_input(
-        "Target power (1−β)",
-        min_value=0.50, max_value=0.99,
-        value=0.80, step=0.01,
-        disabled=not use_power
-    )
-)
+
+alpha = float(st.sidebar.number_input(
+    "Significance level (α)",
+    min_value=0.001, max_value=0.20,
+    value=0.05, step=0.001,
+    disabled=not use_power
+))
+target_power = float(st.sidebar.number_input(
+    "Target power (1−β)",
+    min_value=0.50, max_value=0.99,
+    value=0.80, step=0.01,
+    disabled=not use_power
+))
 
 effect_size = st.sidebar.radio(
     "Expected effect size",
     ["Small", "Medium", "Large"],
-    index=1,  # Medium default
+    index=1,
     disabled=not use_power
 )
 
@@ -229,7 +236,7 @@ design_type = st.sidebar.selectbox(
     disabled=not use_power
 )
 
-# --- NEW: Complementary proportions option (only meaningful for categorical + two groups)
+# Inputs for categorical two-group analytical
 complementary_mode = False
 p1 = 0.50
 p2 = 0.50
@@ -239,14 +246,15 @@ if use_power and is_categorical and design_type == "Two independent groups":
     complementary_mode = st.sidebar.checkbox(
         "Force p2 = 1 − p1 (complementary)",
         value=False,
-        help="Use only if Group 2 is the complement category of Group 1 (success vs failure)."
+        help="Use only if the second proportion is the complement category of the first (success vs failure)."
     )
 
     p1 = float(st.sidebar.number_input(
         "Group 1 proportion (p1)",
         min_value=0.01, max_value=0.99,
         value=0.50, step=0.01,
-        help="Default 0.50. If complementary mode is on, p2 is fixed as 1−p1."
+        format="%.2f",
+        help="Default 0.50."
     ))
 
     if complementary_mode:
@@ -256,6 +264,7 @@ if use_power and is_categorical and design_type == "Two independent groups":
             min_value=0.01, max_value=0.99,
             value=float(round(p2, 2)),
             step=0.01,
+            format="%.2f",
             disabled=True
         )
     else:
@@ -263,26 +272,21 @@ if use_power and is_categorical and design_type == "Two independent groups":
             "Group 2 proportion (p2)",
             min_value=0.01, max_value=0.99,
             value=0.50, step=0.01,
-            help="Default 0.50. This is an independent group proportion (not forced to 1−p1)."
+            format="%.2f",
+            help="Default 0.50."
         ))
 
 groups_k = 1
 if use_power and design_type in ["Two independent groups", "One-way ANOVA (k groups)"]:
-    groups_k = int(
-        st.sidebar.number_input(
-            "Number of groups (k)",
-            min_value=2,
-            value=2 if design_type == "Two independent groups" else 3,
-            step=1
-        )
-    )
-
-st.sidebar.caption(
-    "US²DF power benchmarks are **per group**. Total power sample size scales as per-group × number of groups."
-)
+    groups_k = int(st.sidebar.number_input(
+        "Number of groups (k)",
+        min_value=2,
+        value=2 if design_type == "Two independent groups" else 3,
+        step=1
+    ))
 
 # ============================================================
-# Model (show settings only if a model is selected)
+# Model
 # ============================================================
 st.sidebar.markdown("### Step 5, Model settings")
 st.sidebar.caption("Only applies if you selected Model.")
@@ -320,22 +324,19 @@ st.sidebar.caption("Select Yes to enable each adjustment.")
 
 use_deff = st.sidebar.radio("Apply DEFF?", ["No", "Yes"], horizontal=True, key="use_deff")
 deff_val = st.sidebar.number_input(
-    "DEFF",
-    min_value=1.0, max_value=10.0, value=1.0, step=0.1,
+    "DEFF", min_value=1.0, max_value=10.0, value=1.0, step=0.1,
     disabled=(use_deff == "No"), key="deff_input"
 )
 
 use_hvif = st.sidebar.radio("Apply HVIF?", ["No", "Yes"], horizontal=True, key="use_hvif")
 hvif_val = st.sidebar.number_input(
-    "HVIF",
-    min_value=1.0, max_value=5.0, value=1.0, step=0.1,
+    "HVIF", min_value=1.0, max_value=5.0, value=1.0, step=0.1,
     disabled=(use_hvif == "No"), key="hvif_input"
 )
 
 use_nr = st.sidebar.radio("Apply Nonresponse adjustment?", ["No", "Yes"], horizontal=True, key="use_nr")
 nr_val = st.sidebar.number_input(
-    "Nonresponse rate (r)",
-    min_value=0.0, max_value=0.90, value=0.05, step=0.01,
+    "Nonresponse rate (r)", min_value=0.0, max_value=0.90, value=0.05, step=0.01,
     disabled=(use_nr == "No"), key="nr_input"
 )
 
@@ -348,39 +349,74 @@ r = float(nr_val) if use_nr == "Yes" else 0.0
 # ============================================================
 n_precision = adam_n_precision(N=N, epsilon=epsilon) if use_precision else None
 
-# POWER: benchmarks are PER GROUP, then scaled by number of groups
+# POWER
 n_power_per_group = None
 n_power = None
 power_note = "Not applied"
 
 if use_power:
-    n_power_per_group = int(POWER_BENCHMARKS_PER_GROUP[effect_size])
+    if power_approach == "US²DF benchmark (recommended)":
+        # Benchmark mode: fixed per-group values
+        n_power_per_group = int(POWER_BENCHMARKS_PER_GROUP[effect_size])
 
-    if design_type == "Single group (one sample)":
-        n_power = n_power_per_group
-        power_note = f"US²DF benchmark (per group treated as total): {effect_size} = {n_power_per_group}."
-
-    elif design_type == "Two independent groups":
-        groups_k = 2  # enforce two groups
-        n_power = n_power_per_group * groups_k
-
-        if is_categorical:
-            if complementary_mode:
-                power_note = (
-                    f"US²DF benchmark: {effect_size} = {n_power_per_group} per group × 2 groups = {n_power} total. "
-                    f"Complementary option ON: p2 fixed as 1−p1, with p1={p1:.2f}, p2={p2:.2f}."
-                )
-            else:
-                power_note = (
-                    f"US²DF benchmark: {effect_size} = {n_power_per_group} per group × 2 groups = {n_power} total. "
-                    f"Independent group proportions shown: p1={p1:.2f}, p2={p2:.2f}."
-                )
+        if design_type == "Single group (one sample)":
+            n_power = n_power_per_group
+            power_note = (
+                f"Benchmark mode: {effect_size} = {n_power_per_group} (treated as total for single group). "
+                f"α={alpha:.3f}, power={target_power:.2f} are reporting defaults in benchmark mode."
+            )
+        elif design_type == "Two independent groups":
+            n_power = n_power_per_group * 2
+            power_note = (
+                f"Benchmark mode: {effect_size} = {n_power_per_group} per group × 2 groups = {n_power} total. "
+                f"α={alpha:.3f}, power={target_power:.2f} are reporting defaults in benchmark mode."
+            )
         else:
-            power_note = f"US²DF benchmark: {effect_size} = {n_power_per_group} per group × 2 groups = {n_power} total."
+            n_power = n_power_per_group * groups_k
+            power_note = (
+                f"Benchmark mode: {effect_size} = {n_power_per_group} per group × k={groups_k} groups = {n_power} total. "
+                f"α={alpha:.3f}, power={target_power:.2f} are reporting defaults in benchmark mode."
+            )
 
-    else:  # One-way ANOVA (k groups)
-        n_power = n_power_per_group * groups_k
-        power_note = f"US²DF benchmark: {effect_size} = {n_power_per_group} per group × k={groups_k} groups = {n_power} total."
+    else:
+        # Analytical mode (inputs-driven)
+        if design_type == "Two independent groups" and is_categorical:
+            # Enforce complementary if selected; otherwise use user p1/p2
+            dmin = MIN_ABS_DIFF[effect_size]
+            if abs(p1 - p2) < 1e-12:
+                st.sidebar.warning(
+                    "p1 equals p2. That implies zero effect and can explode sample sizes. "
+                    f"For planning, consider a difference of at least {dmin:.2f} for {effect_size.lower()} effects."
+                )
+            if abs(p1 - p2) < (dmin / 10):
+                st.sidebar.warning(
+                    f"|p1−p2| is extremely small. This can produce very large n. "
+                    f"Typical planning floor for {effect_size.lower()} is about {dmin:.2f}."
+                )
+
+            n_power = n_two_proportions_total(alpha=alpha, power=target_power, p1=p1, p2=p2)
+            power_note = (
+                f"Analytical mode (two proportions): total n≈{n_power} for α={alpha:.3f}, power={target_power:.2f}, "
+                f"p1={p1:.2f}, p2={p2:.2f}. "
+                + ("Complementary constraint applied (p2=1−p1)." if complementary_mode else "Independent group proportions.")
+            )
+
+        elif design_type == "Single group (one sample)":
+            # Placeholder: keep benchmark for now (paper uses benchmark emphasis)
+            n_power = int(POWER_BENCHMARKS_PER_GROUP[effect_size])
+            power_note = (
+                f"Analytical mode selected, but single-group analytical planning is not activated in this build. "
+                f"Using benchmark fallback n={n_power}."
+            )
+
+        else:
+            # Placeholder: keep benchmark for now (paper uses benchmark emphasis)
+            n_power_per_group = int(POWER_BENCHMARKS_PER_GROUP[effect_size])
+            n_power = n_power_per_group * groups_k
+            power_note = (
+                f"Analytical mode selected, but ANOVA analytical planning is not activated in this build. "
+                f"Using benchmark fallback: {n_power_per_group} per group × k={groups_k} = {n_power}."
+            )
 
 # Model-based
 n_model = None
@@ -524,29 +560,14 @@ if use_power and is_categorical and design_type == "Two independent groups":
 methods_text = (
     f"Sample size was determined using the US²DF framework by combining {selected_text} "
     f"and applying the max-rule (n* = max(n_precision, n_power, n_model) over the selected components). "
-    f"For power planning, US²DF uses per-group benchmarks of 400, 100, and 50 for small, medium, and large effects, "
-    f"and scales total required sample size by the number of groups (k).{extra_power_text} "
+    f"Power planning used the {power_approach.lower()} approach with α={alpha:.3f} and target power={target_power:.2f}. "
+    f"{extra_power_text} "
     f"The base sample was then adjusted for field conditions using DEFF={DEFF:g}, HVIF={HVIF:g}, "
-    f"and an anticipated nonresponse rate r={r:g}, yielding a final recommended sample size of n={n_inflated:,} "
-    f"(Adam, Gyasi, Owusu Jnr & Gyamfi, 2026)."
+    f"and an anticipated nonresponse rate r={r:g}, yielding a final recommended sample size of n={n_inflated:,}."
 )
 
 st.code(methods_text, language="text")
 
-st.markdown("---")
-st.markdown(
-    """
-**Cite as:**
-
-> **Adam, A.M., Gyasi, R.M., Owusu Jnr, P. & Gyamfi, E.N. (2026).**  
-> *Unified Sample Size Determination Framework (US²DF): Integrating Precision, Power, and Model-Based Requirements for Survey Studies.*
-""",
-    unsafe_allow_html=False
-)
-
-# ============================================================
-# Downloads
-# ============================================================
 st.markdown("## Downloads")
 st.download_button(
     "Download breakdown table (CSV)",
