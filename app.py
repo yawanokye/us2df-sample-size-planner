@@ -330,8 +330,8 @@ n_inflated = N if exceeds_population else n_inflated_raw
 # ============================================================
 st.title("Unified Sample Size Determination Framework (US²DF) Sample Size Planner")
 st.write(
-    "Computes sample size using the max-rule: n* = max(n_precision, n_power, n_model), "
-    "then inflates for DEFF, HVIF, and nonresponse."
+    "Computes sample size using the max-rule: n* = max(n based on precision, n based on power, n based on model type), "
+    "then adjust for DEFF, HVIF, and nonresponse."
 )
 
 c1, c2, c3 = st.columns(3)
@@ -346,7 +346,7 @@ c3.metric("Sample Size Estimate based on Model", f"{n_model:,}" if n_model is no
 
 st.markdown("## US²DF Recommendation")
 colA, colB = st.columns(2)
-colA.metric("Base sample size (max-rule), n*", f"{n_star:,}")
+colA.metric("Base (minimum returned) sample size (max-rule), n*", f"{n_star:,}")
 colB.metric("Adjusted and Final Recommended Sample Size", f"{n_inflated:,}")
 
 st.success(f"Binding constraint(s): **{binding_text}**")
@@ -416,9 +416,9 @@ rows.append({
 })
 
 rows.append({
-    "Component": "Final n_inflated",
+    "Component": "Final Recommended Sample Size",
     "Value": n_inflated,
-    "Notes": "n_inflated = n* × DEFF × HVIF × 1/(1−r) (capped at N if needed)"
+    "Notes": "Adjusted Sample Size = n* × DEFF × HVIF × 1/(1−r) (capped at N if needed)"
 })
 
 df_breakdown = pd.DataFrame(rows)
@@ -475,6 +475,7 @@ st.download_button(
 #Update UI toggles and reporting labels
 #Update UI toggles and reporting labels
 #Update UI toggles and reporting labels
+
 
 
 
