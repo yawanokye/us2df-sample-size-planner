@@ -216,32 +216,48 @@ alpha_precision = 1.0 - conf_level_val
 z_precision = z_value_two_sided(alpha_precision)
 
 # ----------------------------
-# Precision (Step 3)
-# ----------------------------
+# ============================================================
+# Precision (Adam, 2020)  ✅ fixed defaults by variable type
+# ============================================================
 st.sidebar.markdown("### Step 3, Precision settings (Adam, 2020)")
-st.sidebar.caption("Only needed if you selected the Precision component.")
+st.sidebar.caption("Only applies if you selected Precision.")
 
-# Default e depends on outcome type, but user can still adjust
-if outcome_type.startswith("Categorical"):
-    rho = 2.0
-    default_e = 0.05
-else:
-    rho = 4.0
-    default_e = 0.03
+is_categorical = outcome_type.startswith("Categorical")
+rho = 2.0 if is_categorical else 4.0
+
+# Correct defaults
+default_e_cat = 0.05
+default_e_cont = 0.03
+
+# Keep two separate stored values, one for each type
+if "e_categorical" not in st.session_state:
+    st.session_state["e_categorical"] = default_e_cat
+if "e_continuous" not in st.session_state:
+    st.session_state["e_continuous"] = default_e_cont
+
+# Pick the active key based on the selected scale
+e_key = "e_categorical" if is_categorical else "e_continuous"
+default_e_active = default_e_cat if is_categorical else default_e_cont
+
+# If user has never edited the active one, ensure it starts at the right default
+# (does NOT overwrite if they already changed it)
+if st.session_state.get(e_key) is None:
+    st.session_state[e_key] = default_e_active
 
 e = float(
     st.sidebar.number_input(
         "Desired degree of accuracy (e)",
         min_value=0.001,
         max_value=0.20,
-        value=float(default_e),
+        value=float(st.session_state[e_key]),  # <-- correct default shows here
         step=0.001,
         disabled=not use_precision,
-        help="Default: 0.05 for categorical, 0.03 for continuous. You can change it."
+        key=e_key,
+        help="Defaults: 0.05 (categorical), 0.03 (continuous). You can adjust."
     )
 )
 
-epsilon = adam_epsilon(rho=rho, e=e, z=z_precision) if use_precision else None
+epsilon = adam_epsilon(rho=rho, e=e, t=t) if use_precision else None
 
 # ----------------------------
 # Power (Step 4)
@@ -580,3 +596,4 @@ st.download_button(
     file_name="US2DF_Breakdown.csv",
     mime="text/csv",
 )
+
